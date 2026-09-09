@@ -58,4 +58,18 @@ class AgenticOSTests(unittest.TestCase):
         self.assertFalse(report['ready'])
         self.assertIsNone(report['completion_percentage'])
 
+    def test_wrong_receipt_type_does_not_break_readiness(self):
+        bootstrap(self.root)
+        receipt = self.root / 'bad-receipt.json'
+        receipt.write_text('[1]', encoding='utf-8')
+        def isolated_path(value):
+            if str(value).startswith('H:/NEXEN/state/'):
+                return receipt
+            return Path(value)
+        with patch('agentic_os.Path', side_effect=isolated_path):
+            report = doctor(self.root, live=False)
+        checks = {x['name']: x for x in report['checks']}
+        self.assertEqual(checks['claude_mem']['status'], 'needs_attention')
+        self.assertEqual(checks['memsearch']['status'], 'needs_attention')
+
 if __name__ == '__main__': unittest.main()

@@ -294,8 +294,9 @@ def doctor(root=ROOT, live=True):
                 receipt = json.loads(path.read_text(encoding='utf-8-sig'))
         except (OSError, ValueError):
             pass
-        check(name, bool(receipt and receipt.get('verified') is True),
-              'Verified installation receipt.' if receipt and receipt.get('verified') is True else 'Installation/connection is not yet verified by a receipt.')
+        verified = isinstance(receipt, dict) and receipt.get('verified') is True
+        check(name, verified,
+              'Verified installation receipt.' if verified else 'Installation/connection is not yet verified by a receipt.')
     if live:
         for name, url in [('nexen', 'http://127.0.0.1:8788/healthz'), ('ollama', 'http://127.0.0.1:11434/api/version')]:
             try:

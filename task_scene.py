@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from task_tracking import Tracker
 
 OLLAMA='http://127.0.0.1:11434'
+MAX_MODEL_PROBES=12
 SCENE_LOCK=threading.Lock()
 ACTIONS={'cleaning':'sweep','coding':'type','music':'mix','planning':'review','rest':'pause'}
 SYSTEM=(
@@ -56,6 +57,22 @@ class ScenePlan(BaseModel):
 
 class LocalSceneModel:
     """Fixed loopback adapter, one chat request, no tools or fallback provider."""
+    async def select_model(self,client,requested,models):
+        candidates=([m for m in models if m['name']==requested] if requested is not None else
+                    sorted(models,key=lambda m:m.get('size') if type(m.get('size')) is int and m['size']>0 else 2**63)[:MAX_MODEL_PROBES])
+        for candidate in candidates:
+            try:
+                response=await client.post(OLLAMA+'/api/show',json={'model':candidate['name']},timeout=5)
+                response.raise_for_status()
+                metadata=response.json()
+                capable=isinstance(metadata,dict) and 'completion' in metadata.get('capabilities',[])
+            except (httpx.HTTPError,ValueError,TypeError):
+                if requested is not None:raise
+                continue
+            if capable:return candidate['name']
+            if requested is not None:raise ValueError('Choose a local model with text-completion support.')
+        raise ValueError('No usable text-completion model was found in the bounded local model check. Select an installed chat model explicitly.')
+
     async def ask(self,requested,context):
         async with httpx.AsyncClient(timeout=httpx.Timeout(110,connect=5),trust_env=False) as client:
             response=await client.get(OLLAMA+'/api/tags',timeout=7);response.raise_for_status()
@@ -64,9 +81,7 @@ class LocalSceneModel:
             if not models:raise ValueError('No installed local model is available.')
             names={m['name'] for m in models}
             if requested is not None and requested not in names:raise ValueError('The selected model is not installed locally.')
-            selected=requested or min(models,key=lambda m:m.get('size') if type(m.get('size')) is int and m['size']>0 else 2**63)['name']
-            response=await client.post(OLLAMA+'/api/show',json={'model':selected},timeout=7);response.raise_for_status()
-            if 'completion' not in response.json().get('capabilities',[]):raise ValueError('Choose a local model with text-completion support.')
+            selected=await asyncio.wait_for(self.select_model(client,requested,models),timeout=20)
             payload={'model':selected,'stream':False,'think':False,'keep_alive':'1m',
                      'format':ScenePlan.model_json_schema(),
                      'messages':[{'role':'system','content':SYSTEM},{'role':'user','content':json.dumps(context,ensure_ascii=False)}],
