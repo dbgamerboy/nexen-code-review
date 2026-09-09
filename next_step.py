@@ -31,6 +31,7 @@ VIDEO_ID = re.compile(r'^[a-f0-9]{64}$')
 def validate_webm(data):
     """Check bounded EBML/DocType/Segment headers; this does not decode frames."""
     def vint(offset, *, identifier=False):
+        """Perform the vint operation."""
         if offset >= len(data) or data[offset] == 0:
             raise ValueError('Missing EBML integer')
         first = data[offset]
@@ -105,15 +106,18 @@ async def read_video_upload(request):
 class NextVideos:
     """NEXEN-owned H/F storage; opaque content IDs never accept caller paths."""
     def __init__(self, root=None):
+        """Initialize the NextVideos instance."""
         self.root = require_output_path(root if root is not None else VIDEO_ROOT)
         self.lock = threading.Lock()
 
     def path(self, video_id, suffix='.webm'):
+        """Perform the path operation."""
         if not VIDEO_ID.fullmatch(str(video_id)):
             raise HTTPException(404, 'Saved video not found.')
         return require_output_path(self.root / (video_id + suffix), within=self.root)
 
     def atomic_write(self, path, data):
+        """Perform the atomic write operation."""
         path = require_output_path(path, within=self.root)
         fd, temporary = tempfile.mkstemp(prefix='.next-video-', suffix='.tmp', dir=self.root)
         try:
@@ -128,6 +132,7 @@ class NextVideos:
             Path(temporary).unlink(missing_ok=True)
 
     def put(self, data, task_id):
+        """Perform the put operation."""
         if len(data) > MAX_VIDEO_BYTES:
             raise HTTPException(413, 'Next-step videos must be 64 MiB or smaller.')
         validate_webm(data)
@@ -157,6 +162,7 @@ class NextVideos:
         return dict(video=receipt, duplicate=duplicate)
 
     def receipt(self, video_id):
+        """Perform the receipt operation."""
         path = self.path(video_id, '.json')
         try:
             if path.stat().st_size > 8192:
@@ -175,6 +181,7 @@ class NextVideos:
             raise HTTPException(409, 'The saved video receipt needs review.') from None
 
     def file(self, video_id):
+        """Perform the file operation."""
         receipt = self.receipt(video_id)
         path = self.path(video_id)
         if not path.is_file():
@@ -229,6 +236,7 @@ class SelectionBody(BaseModel):
 
 class NextSteps:
     def __init__(self, db, requirements=None, seeds=None):
+        """Initialize the NextSteps instance."""
         self.db, self.tracker, self.requirements = db, Tracker(db), requirements
         self.seeds = {}
         path = Path(seeds) if seeds is not None else BASE/'data'/'task-seeds.json'
@@ -388,6 +396,7 @@ class NextSteps:
 
 
 def register(app, db):
+    """Register the runtime routes and lifecycle hooks."""
     from pc_control import validate_request
     flow = NextSteps(db, requirements=lambda: getattr(app.state, 'requirements', None))
     videos = NextVideos()
@@ -422,6 +431,7 @@ def register(app, db):
 
     @app.post('/api/next/{task_id}/video')
     async def save_video(task_id: int, request: Request):
+        """Save video."""
         validate_request(request, mutation=True)
         # A real saved task is required, but a video never completes that task.
         flow.tracker.get(task_id)
@@ -434,6 +444,7 @@ def register(app, db):
 
     @app.get('/api/next/videos/{video_id}')
     def saved_video(video_id: str, request: Request):
+        """Perform the saved video operation."""
         validate_request(request)
         try:
             path = videos.file(video_id)
@@ -445,6 +456,7 @@ def register(app, db):
 
     @app.get('/api/next/videos/{video_id}/receipt')
     def video_receipt(video_id: str, request: Request):
+        """Perform the video receipt operation."""
         validate_request(request)
         try:
             videos.file(video_id)

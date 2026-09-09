@@ -15,6 +15,7 @@ from test_support import fixture_root
 
 class CatalogueTests(unittest.TestCase):
     def setUp(self):
+        """Prepare shared test fixtures."""
         self.temp=tempfile.TemporaryDirectory(dir=fixture_root(),prefix='wdr-lookbook-')
         self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name)
@@ -22,22 +23,28 @@ class CatalogueTests(unittest.TestCase):
         self.raw=b'\x89PNG\r\n\x1a\nfixture-image'
         (self.images/'one.png').write_bytes(self.raw);(self.images/'copy.png').write_bytes(self.raw)
         self.valid=m.build_catalog(self.images,self.index,observations={})
-    def save(self,value):self.index.write_text(json.dumps(value),encoding='utf-8')
+    def save(self,value):
+        """Save the operation."""
+        self.index.write_text(json.dumps(value),encoding='utf-8')
     def invalid(self,value):
+        """Perform the invalid operation."""
         self.save(value)
         with self.assertRaises(HTTPException) as error:m.load_index(self.index)
         self.assertEqual(error.exception.status_code,503)
     def test_valid_catalogue_and_all_duplicate_sources_are_preserved(self):
+        """Verify valid catalogue and all duplicate sources are preserved."""
         self.assertEqual(m.load_index(self.index),self.valid)
         self.assertEqual(len(m.load_index(self.index)['assets'][0]['sources']),2)
         self.assertEqual(m.image_bytes(hashlib.sha256(self.raw).hexdigest(),self.images,self.index),(self.raw,'image/png'))
     def test_missing_consumed_catalogue_fields_return_controlled_503(self):
+        """Verify missing consumed catalogue fields return controlled 503."""
         for key in ('schema','indexed_at','source_label','scope','counts','assets'):
             with self.subTest(key=key):
                 value=copy.deepcopy(self.valid);del value[key];self.invalid(value)
         for patch_value in ({'assets':[None]},{'assets':['old-format']},{'counts':[]},{'counts':{'unique_assets':'347'}},{'indexed_at':None}):
             with self.subTest(patch=patch_value):self.invalid({**self.valid,**patch_value})
     def test_bad_asset_types_paths_and_sources_return_controlled_503(self):
+        """Verify bad asset types paths and sources return controlled 503."""
         malformed=[{'id':None},{'id':'../bad'},{'sha256':'b'*64},{'title':None},{'caption':[]},
                    {'role':{}},{'tags':[None]},{'tags':'tag'},{'sources':None},{'sources':[]},
                    {'sources':[None]},{'sources':[{}]},{'bytes':True},{'mime':[]},
@@ -47,6 +54,7 @@ class CatalogueTests(unittest.TestCase):
             with self.subTest(change=change):
                 value=copy.deepcopy(self.valid);value['assets'][0].update(change);self.invalid(value)
     def test_http_search_and_image_both_fail_cleanly_for_malformed_catalogue(self):
+        """Verify http search and image both fail cleanly for malformed catalogue."""
         value=copy.deepcopy(self.valid);value['assets'][0]['tags']=[{}];self.save(value)
         app=FastAPI();m.register(app);original=m.load_index
         with patch.object(m,'load_index',side_effect=lambda *args,**kwargs:original(self.index)):
@@ -55,6 +63,7 @@ class CatalogueTests(unittest.TestCase):
             self.assertEqual(client.get('/api/wdr/assets/'+self.valid['assets'][0]['id']+'/image').status_code,503)
         self.assertEqual((self.images/'one.png').read_bytes(),self.raw)
     def test_rebuild_preserves_other_reviews_and_valid_fields_of_damaged_asset(self):
+        """Verify rebuild preserves other reviews and valid fields of damaged asset."""
         second=b'\x89PNG\r\n\x1a\nsecond-fixture';(self.images/'two.png').write_bytes(second)
         first_id=hashlib.sha256(self.raw).hexdigest();second_id=hashlib.sha256(second).hexdigest()
         observations={first_id:{'title':'First owned design','caption':'Recorded first observation','tags':['blue'],
@@ -78,6 +87,7 @@ class CatalogueTests(unittest.TestCase):
         self.assertEqual(rebuilt['counts']['visually_reviewed'],2)
         self.assertEqual((self.images/'one.png').read_bytes(),self.raw)
     def test_invalid_or_duplicate_identity_cannot_recover_a_manual_review(self):
+        """Verify invalid or duplicate identity cannot recover a manual review."""
         ident=self.valid['assets'][0]['id']
         for mutation in ('wrong_hash','duplicate','wrong_status'):
             with self.subTest(mutation=mutation):

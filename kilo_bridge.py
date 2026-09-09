@@ -33,16 +33,22 @@ RUN_LOCK=threading.Lock()
 MAX_OUTPUT=1024*1024
 MAX_RUN_SECONDS=150
 
-def now():return datetime.now(timezone.utc).isoformat()
-def sha(text):return hashlib.sha256(text.encode('utf-8')).hexdigest()
+def now():
+    """Return the current UTC timestamp."""
+    return datetime.now(timezone.utc).isoformat()
+def sha(text):
+    """Compute the SHA-256 digest of the supplied bytes."""
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()
 
 def save(path,data):
+    """Save the operation."""
     path.parent.mkdir(parents=True,exist_ok=True)
     temporary=path.with_name(path.name+'.'+uuid.uuid4().hex+'.tmp')
     temporary.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')
     os.replace(temporary,path)
 
 def read_json(path,limit=65536):
+    """Read json."""
     try:
         with path.open('rb') as stream:raw=stream.read(limit+1)
         data=json.loads(raw.decode('utf-8-sig')) if len(raw)<=limit else None
@@ -50,6 +56,7 @@ def read_json(path,limit=65536):
     except (OSError,ValueError,UnicodeError):return {}
 
 def environment():
+    """Perform the environment operation."""
     env={k:v for k,v in os.environ.items() if not k.startswith('KILO_')}
     for key in ('OPENROUTER_API_KEY','ANTHROPIC_API_KEY','OPENAI_API_KEY'):env.pop(key,None)
     directories={'TEMP':Path('H:/NEXEN/temp'),'TMP':Path('H:/NEXEN/temp'),
@@ -66,6 +73,7 @@ def environment():
     return env
 
 def valid_config(data):
+    """Perform the valid config operation."""
     if not isinstance(data,dict):return False
     if not all(isinstance(data.get(key),dict) for key in ('provider','agent')):return False
     provider=data.get('provider',{}).get('ollama',{})
@@ -85,6 +93,7 @@ def valid_config(data):
             agent.get('permission')=={'*':'deny'} and agent.get('model')==MODEL and agent.get('steps')==2)
 
 def verify_config():
+    """Perform the verify config operation."""
     if not BINARY.is_file():raise ValueError('The installed Kilo executable is missing.')
     if not valid_config(read_json(ROOT/'kilo.json')):raise ValueError('The local-only Kilo configuration needs review.')
     result=subprocess.run([str(BINARY),'--pure','debug','config'],cwd=ROOT,env=environment(),
@@ -96,6 +105,7 @@ def verify_config():
     return True
 
 def parse_events(raw):
+    """Parse events."""
     if len(raw)>MAX_OUTPUT:raise ValueError('Kilo output exceeded the local draft limit.')
     texts=[];finished=False;session=None
     for line in raw.decode('utf-8-sig').splitlines():
@@ -123,6 +133,7 @@ class DraftRequest(BaseModel):
 
 class KiloBridge:
     def __init__(self,db):
+        """Initialize the KiloBridge instance."""
         self.db=db;self.tracker=Tracker(db);self.active=None;self.process=None;self.cancelled=threading.Event();self.lease=None;self.worker=None
         ROOT.mkdir(parents=True,exist_ok=True)
         with db.connect() as c:c.execute('''CREATE TABLE IF NOT EXISTS kilo_draft_jobs(
@@ -130,6 +141,7 @@ class KiloBridge:
             task_id INTEGER NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL)''')
 
     def status(self):
+        """Return the current runtime status."""
         receipt=read_json(INSTALL)
         allowed=('status','installed','version','config_verified','local_endpoint_ready','local_model_available',
                  'live_draft_verified','verified','provider','model','context_loaded','continuous_worker_running',
@@ -147,6 +159,7 @@ class KiloBridge:
         return result
 
     def get(self,ident):
+        """Handle a GET request."""
         if not re.fullmatch('[a-f0-9]{32}',ident):raise HTTPException(404,'Kilo draft not found.')
         if not self.db.rows('SELECT id FROM kilo_draft_jobs WHERE id=?',(ident,)):raise HTTPException(404,'Kilo draft not found.')
         receipt=read_json(safe_path(JOBS,ident+'/receipt.json'))
@@ -154,6 +167,7 @@ class KiloBridge:
         return receipt
 
     def prepare(self,body):
+        """Prepare the requested operation."""
         fingerprint=sha(body.model_dump_json(exclude={'request_key'}))
         existing=self.db.rows('SELECT id,payload_hash FROM kilo_draft_jobs WHERE request_key=?',(body.request_key,))
         if existing:
@@ -199,10 +213,12 @@ class KiloBridge:
         return receipt
 
     def record(self,receipt):
+        """Record the operation."""
         receipt['updated_at']=now();save(safe_path(JOBS,receipt['id']+'/receipt.json'),receipt)
         with self.db.connect() as c:c.execute('UPDATE kilo_draft_jobs SET status=? WHERE id=?',(receipt['status'],receipt['id']))
 
     async def start(self,ident):
+        """Start the operation."""
         receipt=self.get(ident)
         if receipt['status']!='prepared':return receipt
         if not RUN_LOCK.acquire(blocking=False):raise HTTPException(409,'A Kilo draft is already running.')
@@ -222,6 +238,7 @@ class KiloBridge:
         return self.get(ident)
 
     def run(self,receipt):
+        """Run the operation."""
         folder=safe_path(JOBS,receipt['id']);started=time.monotonic()
         try:
             verify_config()
@@ -256,6 +273,7 @@ class KiloBridge:
                 RUN_LOCK.release()
 
     def cancel(self,ident):
+        """Cancel the active operation."""
         receipt=self.get(ident)
         if receipt['status']=='running':
             safe_path(JOBS,ident+'/cancel.requested').write_text(now(),encoding='utf-8')
@@ -264,6 +282,7 @@ class KiloBridge:
         return self.get(ident)
 
     def recover(self):
+        """Perform the recover operation."""
         try:
             with SingleWriter(ROOT):
                 for row in self.db.rows("SELECT id FROM kilo_draft_jobs WHERE status='running'"):
@@ -282,6 +301,7 @@ class KiloBridge:
         if self.active==ident:self.cancelled.set()
 
     async def shutdown(self):
+        """Shut down the operation."""
         if self.active:
             try:self.cancel(self.active)
             except HTTPException as error:
@@ -291,14 +311,18 @@ class KiloBridge:
         while self.active and time.monotonic()<deadline:await asyncio.sleep(.1)
 
 def register(app,db):
+    """Register the runtime routes and lifecycle hooks."""
     from app_lifecycle import register_lifecycle
     from pc_control import validate_request
     bridge=KiloBridge(db)
     register_lifecycle(app, startup=bridge.recover, shutdown=bridge.shutdown)
     @app.get('/kilo',response_class=HTMLResponse)
-    def page(request:Request):validate_request(request);return (BASE/'kilo.html').read_text(encoding='utf-8')
+    def page(request:Request):
+        """Serve the requested application page."""
+        validate_request(request);return (BASE/'kilo.html').read_text(encoding='utf-8')
     @app.get('/api/kilo/status')
     def status(request:Request):
+        """Return the current runtime status."""
         validate_request(request)
         result = bridge.status()
         controller = getattr(app.state, 'continuity', None)
@@ -310,26 +334,37 @@ def register(app,db):
             result['queue_mode'] = 'prepared-drafts' if state['enabled'] else 'explicit-run'
         return result
     @app.post('/api/kilo/prepare',status_code=201)
-    def prepare(body:DraftRequest,request:Request):validate_request(request,mutation=True);return bridge.prepare(body)
+    def prepare(body:DraftRequest,request:Request):
+        """Prepare the requested operation."""
+        validate_request(request,mutation=True);return bridge.prepare(body)
     @app.get('/api/kilo/jobs/{ident}')
-    def get(ident:str,request:Request):validate_request(request);return bridge.get(ident)
+    def get(ident:str,request:Request):
+        """Handle a GET request."""
+        validate_request(request);return bridge.get(ident)
     @app.post('/api/kilo/jobs/{ident}/run',status_code=202)
-    async def run(ident:str,request:Request):validate_request(request,mutation=True);return await bridge.start(ident)
+    async def run(ident:str,request:Request):
+        """Run the operation."""
+        validate_request(request,mutation=True);return await bridge.start(ident)
     @app.post('/api/kilo/jobs/{ident}/cancel')
-    def cancel(ident:str,request:Request):validate_request(request,mutation=True);return bridge.cancel(ident)
+    def cancel(ident:str,request:Request):
+        """Cancel the active operation."""
+        validate_request(request,mutation=True);return bridge.cancel(ident)
     return bridge
 
 class LocalDB:
     @contextmanager
     def connect(self):
+        """Perform the connect operation."""
         connection=sqlite3.connect(BASE/'data/nexen.db',timeout=10);connection.row_factory=sqlite3.Row
         try:yield connection;connection.commit()
         except Exception:connection.rollback();raise
         finally:connection.close()
     def rows(self,sql,args=()):
+        """Perform the rows operation."""
         with self.connect() as connection:return [dict(row) for row in connection.execute(sql,args)]
 
 def main():
+    """Perform the main operation."""
     parser=argparse.ArgumentParser(description='Prepare or run one local Kilo draft for an existing NEXEN task.')
     parser.add_argument('action',choices=['status','prepare','run'])
     parser.add_argument('--task-id',type=int)
@@ -344,6 +379,7 @@ def main():
     elif args.action=='prepare':result=bridge.prepare(DraftRequest(request_key=uuid.uuid4().hex,task_id=args.task_id,project=args.project,kind=args.kind))
     else:
         async def one():
+            """Perform the one operation."""
             await bridge.start(args.job_id)
             while bridge.active:await asyncio.sleep(.2)
             return bridge.get(args.job_id)

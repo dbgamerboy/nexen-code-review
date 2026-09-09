@@ -94,6 +94,7 @@ class MoneyTests(unittest.TestCase):
         self.assertFalse(x['budget']['automatically_restarts'])
 
     def test_status_only_patch_preserves_notes_and_explicit_empty_clears(self):
+        """Verify status only patch preserves notes and explicit empty clears."""
         ident = self.engine.create(OpportunityCreate(title='Existing offer', evidence='Supplier quote', next_step='Check delivery'))
         async def exercise():
             app = FastAPI()

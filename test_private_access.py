@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parent / 'work' / 'private-access-tests'
 
 class PrivateAccessTest(unittest.TestCase):
     def setUp(self):
+        """Prepare shared test fixtures."""
         self.temp = tempfile.TemporaryDirectory(prefix='private-access-')
         self.addCleanup(self.temp.cleanup)
         self.file = Path(self.temp.name) / 'private.json'
@@ -26,6 +27,7 @@ class PrivateAccessTest(unittest.TestCase):
         self.patch.stop()
         self.temp.cleanup()
     def request(self, method='GET', host='PRIVATE_HOST.invalid', identity='review-b2096dbc5111b630@example.invalid', origin=None, client='127.0.0.1', extra=()):
+        """Perform the request operation."""
         headers = [(b'host', host.encode())]
         if identity is not None: headers.append((b'tailscale-user-login', identity.encode()))
         if origin is not None: headers.append((b'origin', origin.encode()))
@@ -49,6 +51,7 @@ class PrivateAccessTest(unittest.TestCase):
         self.assertNotIn('x-forwarded-for',req.headers)
         validate_request(req,mutation=True)
     def test_bad_identity_origin_peer_and_duplicate_headers_fail_closed(self):
+        """Verify bad identity origin peer and duplicate headers fail closed."""
         bad = [self.request(identity=None), self.request(identity='review-b0431fe807440962@example.invalid'),
             self.request(client='192.0.2.10',extra=[(b'x-forwarded-for',b'127.0.0.1')]),
             self.request(origin='http://PRIVATE_HOST.invalid'),self.request(origin='https://evil.example'),
@@ -67,6 +70,7 @@ class PrivateAccessTest(unittest.TestCase):
         self.assertFalse(req.state.private_access)
         self.assertEqual(req.headers['x-nexen-service'],'fixture-secret')
     def test_disabled_access_and_sanitized_status(self):
+        """Verify disabled access and sanitized status."""
         self.config['enabled'] = False
         self.file.write_text(json.dumps(self.config),encoding='utf-8')
         with self.assertRaises(HTTPException): module.normalize_private_request(self.request())

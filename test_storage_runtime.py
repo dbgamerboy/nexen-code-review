@@ -8,6 +8,7 @@ from storage_runtime import read_migration
 
 class StorageTests(unittest.TestCase):
     def test_missing_and_bad_journals_keep_the_success_key_set(self):
+        """Verify missing and bad journals keep the success key set."""
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'migration.json'
             missing=read_migration(path)

@@ -137,6 +137,7 @@ def enhance_catalog(output=OUTPUT):
 
 
 def write_report(output=OUTPUT,report=Path('F:/reports/EXACT-PROMPTS-REPORT.md')):
+    """Write report."""
     output=Path(output);data=json.loads((output/'source-report.json').read_text(encoding='utf-8'));catalog=json.loads((output/'prompt-catalog.json').read_text(encoding='utf-8'))
     unread=[s for s in data['sources'] if s['status']!='read_full'];partial=[s for s in data['sources'] if s.get('index_partial')]
     body='# Exact prompts and AI inventory — verified local report\n\nChecked '+data['checked_at']+'.\n\n'

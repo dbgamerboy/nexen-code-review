@@ -49,8 +49,11 @@ MAX_ATTEMPTS=3
 RENDER_TIMEOUT=1800
 STEM_BLOCKER='Stems need a human FL export setup: mixer or playlist tracks, dry/wet effects, shared start/range and lossless WAV settings. MP3 or mixed WAV is not a stem export.'
 
-def now():return datetime.now(timezone.utc).isoformat()
+def now():
+    """Return the current UTC timestamp."""
+    return datetime.now(timezone.utc).isoformat()
 def hash_file(path,limit):
+    """Perform the hash file operation."""
     _reject_links(path)
     if not path.is_file() or path.stat().st_size>limit:raise ValueError('File is missing or exceeds its size limit.')
     digest=hashlib.sha256();size=0
@@ -68,6 +71,7 @@ def checked_hash(path,limit):
         raise HTTPException(409,'The project or audio file is missing, changed, unreadable or outside its size limit. Review it before continuing.') from None
 
 def atomic_json(path,data):
+    """Perform the atomic json operation."""
     path=require_output_path(path)
     temporary=path.with_name('.'+path.name+'.'+uuid.uuid4().hex+'.tmp')
     try:
@@ -78,6 +82,7 @@ def atomic_json(path,data):
         if temporary.exists():temporary.unlink()
 
 def mutagen_class():
+    """Perform the mutagen class operation."""
     if hash_file(DEPENDENCY,1024*1024)!=DEPENDENCY_SHA:raise ValueError('The MP3 validator dependency needs verification.')
     if str(DEPENDENCY) not in sys.path:sys.path.insert(0,str(DEPENDENCY))
     from mutagen.mp3 import MP3
@@ -100,7 +105,9 @@ def inspect_mp3(path):
             'limitation':'Stream parsing does not prove every sample, plugin, vocal or effect is present. Listen to the full mix.'}
 
 class NativeFL:
-    def __init__(self,root=ROOT):self.root=require_output_path(root)
+    def __init__(self,root=ROOT):
+        """Initialize the NativeFL instance."""
+        self.root=require_output_path(root)
     def user_data_path(self):
         """Read FL's actual configured save root, without changing its settings."""
         import winreg
@@ -129,6 +136,7 @@ class NativeFL:
         atomic_json(self.root/'profile'/'fl-setup-check.json',receipt)
         return receipt
     def require_profile_setup(self):
+        """Require profile setup."""
         identity=self.profile_identity()
         try:
             path=require_output_path(self.root/'profile'/'fl-setup-check.json',within=self.root)
@@ -140,6 +148,7 @@ class NativeFL:
             raise StoragePolicyError('Complete the visible NEXEN FL profile setup check before background rendering. A folder alone is not an initialized profile.') from None
         return receipt
     def storage_status(self):
+        """Perform the storage status operation."""
         result={'allowed_drives':['H:','F:'],'output_root':str(self.root/'exports'),
                 'configured_paths_verified':False,'fl_user_data':None,
                 'third_party_write_confinement':False,
@@ -152,6 +161,7 @@ class NativeFL:
             result['blocker']=str(error) if isinstance(error,StoragePolicyError) else 'FL Studio storage settings could not be verified. No render may start.'
         return result
     def running(self):
+        """Perform the running operation."""
         tasklist=Path(os.environ.get('SystemRoot','C:/Windows'))/'System32/tasklist.exe'
         result=subprocess.run([str(tasklist),'/FO','CSV','/NH'],capture_output=True,timeout=8,
                               creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
@@ -159,6 +169,7 @@ class NativeFL:
         rows=csv.reader(io.StringIO(result.stdout.decode('utf-8',errors='replace')))
         return any(row and row[0].casefold() in {'fl.exe','fl64.exe','flengine_x64.exe','flengine.exe'} for row in rows)
     def ready(self):
+        """Perform the ready operation."""
         require_output_path(self.root)
         self.user_data_path()
         _reject_links(FL_EXE)
@@ -166,6 +177,7 @@ class NativeFL:
         self.require_profile_setup()
         mutagen_class()
     def launch(self,project,output):
+        """Perform the launch operation."""
         self.user_data_path()
         self.require_profile_setup()
         project=require_output_path(project,within=self.root)
@@ -207,6 +219,7 @@ class ListenCheck(BaseModel):
 class MusicRender:
     def __init__(self,db,*,root=ROOT,inventory=INVENTORY,source_root=SOURCE_ROOT,task_id=94,
                  adapter=None,validator=inspect_mp3,space=None,timeout=RENDER_TIMEOUT):
+        """Initialize the MusicRender instance."""
         self.db=db;self.root=require_output_path(root);self.inventory=Path(inventory);self.source_root=Path(source_root)
         _reject_links(self.root);self.root.mkdir(parents=True,exist_ok=True)
         self.task_id=task_id;self.tracker=Tracker(db);self.adapter=adapter or NativeFL(self.root)
@@ -223,6 +236,7 @@ class MusicRender:
                 CREATE TABLE IF NOT EXISTS music_render_retries(parent_id TEXT PRIMARY KEY,child_id TEXT UNIQUE NOT NULL);''')
 
     def import_inventory(self):
+        """Perform the import inventory operation."""
         _reject_links(self.inventory)
         if self.inventory.stat().st_size>2*1024**2:raise ValueError('Inventory exceeds the bounded import size.')
         data=json.loads(self.inventory.read_text(encoding='utf-8-sig'))
@@ -247,10 +261,12 @@ class MusicRender:
         return self.inventory_status
 
     def projects(self):
+        """Perform the projects operation."""
         return [{'id':row['id'],'title':Path(row['path']).stem,'source_path':row['path'],'source_sha256':row['sha256']}
                 for row in self.db.rows('SELECT * FROM music_render_projects ORDER BY id')]
 
     def get(self,ident):
+        """Handle a GET request."""
         if not re.fullmatch('[a-f0-9]{32}',ident):raise HTTPException(404,'Render job not found.')
         rows=self.db.rows('SELECT receipt_json FROM music_render_jobs WHERE id=?',(ident,))
         if not rows:raise HTTPException(404,'Render job not found.')
@@ -260,12 +276,14 @@ class MusicRender:
         return data
 
     def folder(self,job):
+        """Perform the folder operation."""
         for name,length in (('project_id',16),('source_sha256',64),('id',32)):
             if not re.fullmatch('[a-f0-9]{'+str(length)+'}',str(job.get(name,''))):raise ValueError('Malformed render lineage.')
         result=require_output_path(self.root/'exports'/job['project_id']/job['source_sha256']/job['id'],within=self.root)
         return result
 
     def save(self,job):
+        """Save the operation."""
         job['updated_at']=now()
         # SQLite is authoritative; file mirroring failure is explicit and can
         # never turn valid recorded audio into a fabricated missing result.
@@ -277,6 +295,7 @@ class MusicRender:
         return job
 
     def record(self,job):
+        """Record the operation."""
         event_key='music-render:'+job['id']+':'+job['status']
         outcome=json.dumps({'job_id':job['id'],'status':job['status'],'source_sha256':job['source_sha256'],
                             'task_id':self.task_id,'output':job.get('output'),'reason':job.get('reason'),
@@ -291,6 +310,7 @@ class MusicRender:
         export_journal(self.db)
 
     def enqueue(self,body,parent=None):
+        """Perform the enqueue operation."""
         body=Enqueue.model_validate(body)
         with self.lock:
             self.tracker.get(self.task_id)
@@ -326,6 +346,7 @@ class MusicRender:
             self.save(job);self.record(job);return job
 
     def preflight(self,ident,body):
+        """Perform the preflight operation."""
         body=Preflight.model_validate(body)
         with self.lock:
             job=self.get(ident)
@@ -342,6 +363,7 @@ class MusicRender:
             return self.save(job)
 
     def start(self,ident):
+        """Start the operation."""
         with self.lock:
             if self.closing:raise HTTPException(409,'The render service is shutting down. Restart NEXEN before dispatching a job.')
             if self.active:raise HTTPException(409,'A music render is already active. Wait or cancel it.')
@@ -374,6 +396,7 @@ class MusicRender:
                 self.active=None;lease.__exit__(None,None,None);raise
 
     def _stop_owned(self):
+        """Stop owned."""
         process=self.process
         if process is None or process.poll() is not None:return
         process.terminate()
@@ -381,6 +404,7 @@ class MusicRender:
         except subprocess.TimeoutExpired:process.kill();process.wait(timeout=5)
 
     def _run(self,job,lease):
+        """Run the operation."""
         ident=job['id']
         try:
             # Check again immediately before spawn; never delegate rendering
@@ -430,6 +454,7 @@ class MusicRender:
                 lease.__exit__(None,None,None)
 
     def cancel(self,ident):
+        """Cancel the active operation."""
         with self.lock:
             job=self.get(ident)
             if ident==self.active:self.stop.set();return {**job,'cancellation_requested':True}
@@ -438,6 +463,7 @@ class MusicRender:
             return job
 
     def retry(self,ident):
+        """Perform the retry operation."""
         with self.lock:
             job=self.get(ident)
             previous=self.db.rows('SELECT child_id FROM music_render_retries WHERE parent_id=?',(ident,))
@@ -447,6 +473,7 @@ class MusicRender:
             return self.enqueue(Enqueue(request_key=uuid.uuid4().hex,project_id=job['project_id'],persona=job['persona'],genre=job['genre']),parent=job)
 
     def accept(self,ident,body):
+        """Perform the accept operation."""
         body=ListenCheck.model_validate(body)
         with self.lock:
             job=self.get(ident)
@@ -459,11 +486,13 @@ class MusicRender:
 
     def recover(self):
         # A saved PID is not ownership proof after restart. Do not kill it.
+        """Perform the recover operation."""
         for row in self.db.rows("SELECT id FROM music_render_jobs WHERE status IN ('rendering','validating')"):
             job=self.get(row['id']);job.update(status='interrupted',reason='NEXEN restarted during this job. Inspect FL and partial outputs; no automatic retry or PID-based termination.')
             self.save(job);self.record(job)
 
     async def shutdown(self):
+        """Shut down the operation."""
         with self.lock:self.closing=True;self.stop.set()
         future=self.future
         try:
@@ -471,6 +500,7 @@ class MusicRender:
         finally:self.executor.shutdown(wait=False,cancel_futures=True)
 
     def status(self):
+        """Return the current runtime status."""
         jobs=[]
         for row in self.db.rows('SELECT id FROM music_render_jobs ORDER BY created_at DESC LIMIT 50'):
             try:jobs.append(self.get(row['id']))
@@ -486,37 +516,60 @@ class MusicRender:
                 'limits':'One explicit job at a time. No cloud calls, source edits, overwrite or automatic retries. FL user-data paths and plugin completeness require copied-project inspection.'}
 
 def register(app,db):
+    """Register the runtime routes and lifecycle hooks."""
     from app_lifecycle import register_lifecycle
     from pc_control import validate_request
     service=MusicRender(db)
     def startup():
+        """Perform the startup operation."""
         service.recover()
         try:service.import_inventory()
         except (OSError,ValueError) as error:
             service.inventory_status={'status':'blocked','reason':'The reviewed personal-project inventory is unavailable or invalid.','error_class':type(error).__name__}
     register_lifecycle(app,startup=startup,shutdown=service.shutdown)
     @app.get('/music-render',response_class=HTMLResponse)
-    def page(request:Request):validate_request(request);return PAGE
+    def page(request:Request):
+        """Serve the requested application page."""
+        validate_request(request);return PAGE
     @app.get('/api/music-render/status')
-    def status(request:Request):validate_request(request);return service.status()
+    def status(request:Request):
+        """Return the current runtime status."""
+        validate_request(request);return service.status()
     @app.get('/api/music-render/projects')
-    def projects(request:Request):validate_request(request);return {'projects':service.projects(),'inventory_status':service.inventory_status}
+    def projects(request:Request):
+        """Perform the projects operation."""
+        validate_request(request);return {'projects':service.projects(),'inventory_status':service.inventory_status}
     @app.post('/api/music-render/jobs')
-    def enqueue(body:Enqueue,request:Request):validate_request(request,mutation=True);return service.enqueue(body)
+    def enqueue(body:Enqueue,request:Request):
+        """Perform the enqueue operation."""
+        validate_request(request,mutation=True);return service.enqueue(body)
     @app.get('/api/music-render/jobs/{ident}')
-    def get(ident:str,request:Request):validate_request(request);return service.get(ident)
+    def get(ident:str,request:Request):
+        """Handle a GET request."""
+        validate_request(request);return service.get(ident)
     @app.post('/api/music-render/jobs/{ident}/preflight')
-    def preflight(ident:str,body:Preflight,request:Request):validate_request(request,mutation=True);return service.preflight(ident,body)
+    def preflight(ident:str,body:Preflight,request:Request):
+        """Perform the preflight operation."""
+        validate_request(request,mutation=True);return service.preflight(ident,body)
     @app.post('/api/music-render/jobs/{ident}/start')
-    def start(ident:str,request:Request):validate_request(request,mutation=True);return service.start(ident)
+    def start(ident:str,request:Request):
+        """Start the operation."""
+        validate_request(request,mutation=True);return service.start(ident)
     @app.post('/api/music-render/jobs/{ident}/cancel')
-    def cancel(ident:str,request:Request):validate_request(request,mutation=True);return service.cancel(ident)
+    def cancel(ident:str,request:Request):
+        """Cancel the active operation."""
+        validate_request(request,mutation=True);return service.cancel(ident)
     @app.post('/api/music-render/jobs/{ident}/retry')
-    def retry(ident:str,request:Request):validate_request(request,mutation=True);return service.retry(ident)
+    def retry(ident:str,request:Request):
+        """Perform the retry operation."""
+        validate_request(request,mutation=True);return service.retry(ident)
     @app.post('/api/music-render/jobs/{ident}/accept')
-    def accept(ident:str,body:ListenCheck,request:Request):validate_request(request,mutation=True);return service.accept(ident,body)
+    def accept(ident:str,body:ListenCheck,request:Request):
+        """Perform the accept operation."""
+        validate_request(request,mutation=True);return service.accept(ident,body)
     @app.get('/api/music-render/jobs/{ident}/audio')
     def audio(ident:str,request:Request):
+        """Perform the audio operation."""
         validate_request(request);job=service.get(ident)
         if job['status'] not in {'rendered','complete'}:raise HTTPException(409,'Verified MP3 is not available yet.')
         path=service.folder(job)/'audio/project.mp3';_reject_links(path)
@@ -539,14 +592,17 @@ el('setup-fl').onclick=async()=>{if(locked)return;locked=true;el('setup-fl').dis
 class LocalDB:
     @contextmanager
     def connect(self):
+        """Perform the connect operation."""
         connection=sqlite3.connect(BASE/'data/nexen.db',timeout=10);connection.row_factory=sqlite3.Row
         try:
             with connection:yield connection
         finally:connection.close()
     def rows(self,sql,args=()):
+        """Perform the rows operation."""
         with self.connect() as connection:return [dict(row) for row in connection.execute(sql,args)]
 
 def main():
+    """Perform the main operation."""
     parser=argparse.ArgumentParser(description='NEXEN reviewed FL project queue. Run requires a saved copied-project preflight from /music-render.')
     parser.add_argument('action',choices=['status','enqueue','run','retry'])
     parser.add_argument('--project-id')

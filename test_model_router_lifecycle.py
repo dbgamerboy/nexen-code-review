@@ -36,6 +36,7 @@ ToolFabric = namespace['ToolFabric']
 
 class JarvisFallbackTests(unittest.TestCase):
     def test_memory_failure_preserves_factual_report_without_any_provider_request(self):
+        """Verify memory failure preserves factual report without any provider request."""
         with tempfile.TemporaryDirectory(dir=fixture_root()) as temporary:
             path = Path(temporary)
             @contextmanager
@@ -67,6 +68,7 @@ class JarvisFallbackTests(unittest.TestCase):
             self.assertEqual(next((path/'reports').glob('*.txt')).read_text(encoding='utf-8'),report)
 
     def test_empty_model_result_still_uses_existing_telemetry_fallback(self):
+        """Verify empty model result still uses existing telemetry fallback."""
         worker = Jarvis.__new__(Jarvis)
         worker.snapshot = lambda:{'files_indexed':7}
         worker.router = types.SimpleNamespace(text=lambda prompt:None)
@@ -84,12 +86,14 @@ class JarvisFallbackTests(unittest.TestCase):
 
 class ModelRouterTests(unittest.TestCase):
     def setUp(self):
+        """Prepare shared test fixtures."""
         self.events = []
         self.cfg = {'models':{'local_first':True,'ollama':{'enabled':True,'base_url':'http://127.0.0.1:11434','model':'fixture'},
                     'openai':{'enabled':True,'model_fast':'fixture','model_hard':'fixture'},'anthropic':{'enabled':True,'model':'fixture'}}}
         self.router = ModelRouter(self.cfg, event=lambda *args, **kwargs:self.events.append((args,kwargs)))
 
     def test_failure_falls_back_and_records_only_sanitized_provider_metadata(self):
+        """Verify failure falls back and records only sanitized provider metadata."""
         error = httpx.HTTPStatusError('secret prompt, token=secret and private URL', request=httpx.Request('POST','https://example.invalid/?token=secret'), response=httpx.Response(503))
         client = types.SimpleNamespace(responses=types.SimpleNamespace(create=lambda **kw:types.SimpleNamespace(output_text='Fallback draft')))
         memory = types.SimpleNamespace(enrich_prompt=lambda text,kind:text)
@@ -103,6 +107,7 @@ class ModelRouterTests(unittest.TestCase):
         for secret in ('secret','example.invalid','fixture-key'): self.assertNotIn(secret, serialized)
 
     def test_disabled_and_missing_auth_are_not_failed_requests(self):
+        """Verify disabled and missing auth are not failed requests."""
         self.cfg['models']['ollama']['enabled'] = False
         with patch.dict(os.environ, {}, clear=True), patch.object(httpx,'post',side_effect=AssertionError('No request')):
             self.assertIsNone(self.router.ollama('unused'))
@@ -111,6 +116,7 @@ class ModelRouterTests(unittest.TestCase):
         self.assertEqual(self.events, [])
 
     def test_each_cloud_failure_is_recorded_without_breaking_none_fallback(self):
+        """Verify each cloud failure is recorded without breaking none fallback."""
         def fail(**kwargs): raise RuntimeError('credential and prompt must remain private')
         modules = {'openai':types.SimpleNamespace(OpenAI=fail), 'anthropic':types.SimpleNamespace(Anthropic=fail)}
         with patch.dict(sys.modules, modules), patch.dict(os.environ, {'OPENAI_API_KEY':'fixture','ANTHROPIC_API_KEY':'fixture'}):
@@ -120,6 +126,7 @@ class ModelRouterTests(unittest.TestCase):
         self.assertNotIn('credential', json.dumps(self.events))
 
     def test_memory_failure_is_distinct_and_stops_before_any_provider(self):
+        """Verify memory failure is distinct and stops before any provider."""
         def fail(*args): raise ValueError('private source text')
         with patch.dict(sys.modules, {'memory_runtime':types.SimpleNamespace(enrich_prompt=fail)}), patch.object(httpx,'post',side_effect=AssertionError('No model request')):
             with self.assertRaises(MemoryContextError) as error: self.router.text('private question')
@@ -127,6 +134,7 @@ class ModelRouterTests(unittest.TestCase):
         self.assertEqual(self.events[0][0][0], 'model_context_failure')
 
     def test_shutdown_stops_provider_fallback_after_inflight_request_returns(self):
+        """Verify shutdown stops provider fallback after inflight request returns."""
         stop=threading.Event();router=ModelRouter(self.cfg,stop_requested=stop.is_set)
         def first(*args,**kwargs):
             stop.set()
@@ -139,6 +147,7 @@ class ModelRouterTests(unittest.TestCase):
         cloud.assert_not_called()
 
     def test_cloud_clients_have_explicit_timeout_and_no_retry_amplification(self):
+        """Verify cloud clients have explicit timeout and no retry amplification."""
         calls=[]
         def client(**kwargs):
             calls.append(kwargs)
@@ -154,6 +163,7 @@ class ModelRouterTests(unittest.TestCase):
         self.assertEqual(self.router.request_timeout(99999).read,ModelRouter.REQUEST_TIMEOUT_SECONDS)
 
     def test_tool_probe_stops_before_another_version_attempt(self):
+        """Verify tool probe stops before another version attempt."""
         stop=threading.Event();fabric=ToolFabric(None,{},stop_requested=stop.is_set)
         def probe(*args,**kwargs):
             stop.set()
@@ -165,6 +175,7 @@ class ModelRouterTests(unittest.TestCase):
 
 class SupervisorLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_idle_supervisor_stops_immediately_and_does_not_duplicate(self):
+        """Verify idle supervisor stops immediately and does not duplicate."""
         worker = Supervisor.__new__(Supervisor)
         worker._stop_event = threading.Event()
         worker._thread = None
@@ -182,6 +193,7 @@ class SupervisorLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(worker._stop_event.is_set())
 
     async def test_scan_cooperatively_stops_before_reading_next_file(self):
+        """Verify scan cooperatively stops before reading next file."""
         with tempfile.TemporaryDirectory(dir=fixture_root()) as temporary:
             Path(temporary,'fixture.txt').write_text('fixture', encoding='utf-8')
             db = types.SimpleNamespace(event=Mock())

@@ -16,37 +16,51 @@ from agents_console import AgentsConsole, HandoffBody, TARGETS, CURRENT_CORRECTI
 
 
 class DB:
-    def __init__(self,path):self.path=path
+    def __init__(self,path):
+        """Initialize the DB instance."""
+        self.path=path
     @contextmanager
     def connect(self):
+        """Perform the connect operation."""
         c=sqlite3.connect(self.path);c.row_factory=sqlite3.Row
         try:
             with c:yield c
         finally:c.close()
     def rows(self,sql,params=()):
+        """Perform the rows operation."""
         with self.connect() as c:return [dict(r) for r in c.execute(sql,params)]
     def scalar(self,sql,params=()):
+        """Perform the scalar operation."""
         with self.connect() as c:return c.execute(sql,params).fetchone()[0]
 
 
 class AgentConsoleTests(unittest.TestCase):
     def setUp(self):
+        """Prepare shared test fixtures."""
         self.temp=tempfile.TemporaryDirectory();self.root=Path(self.temp.name)
         self.db=DB(self.root/'tasks.sqlite3');self.context_calls=[]
         self.console=self.make_console()
-    def tearDown(self):self.temp.cleanup()
+    def tearDown(self):
+        """Clean up shared test fixtures."""
+        self.temp.cleanup()
     def context(self,query,task_type,pool):
+        """Perform the context operation."""
         self.context_calls.append((query,task_type,pool))
         return {'egress_policy':'local_only','status':'ready','text':'Archived evidence: superseded desktop setup proposal. password=fictional-secret',
                 'citations':[{'source_id':'chunk-17','title':'Old plan','kind':'knowledge','ts':'2026-08-01'}]}
     def profile(self,project):
+        """Perform the profile operation."""
         return {'documents':[{'source':'context/user.md','sha256':'a'*64,'text':'Current profile for '+project}],'warnings':[]}
     def make_console(self,**kwargs):
+        """Create console."""
         return AgentsConsole(self.db,root=self.root/'packets',context_loader=kwargs.pop('context_loader',self.context),
                              profile_loader=kwargs.pop('profile_loader',self.profile),readiness_loader=kwargs.pop('readiness_loader',lambda:{'providers':[]}),**kwargs)
-    def body(self,**values):return {'prompt':'Implement a Windows Kilo workflow','target':'kilo','project':'nexen','task_type':'workflow',**values}
+    def body(self,**values):
+        """Perform the body operation."""
+        return {'prompt':'Implement a Windows Kilo workflow','target':'kilo','project':'nexen','task_type':'workflow',**values}
 
     def test_shared_task_and_packet_persist_without_dispatch(self):
+        """Verify shared task and packet persist without dispatch."""
         one=self.console.prepare(self.body());two=self.console.prepare(self.body())
         self.assertEqual(one['id'],two['id']);self.assertEqual(one['task_id'],two['task_id'])
         self.assertEqual(self.db.scalar('SELECT count(*) FROM hub_requests'),1)
@@ -58,6 +72,7 @@ class AgentConsoleTests(unittest.TestCase):
         self.assertTrue((self.root/'packets'/(one['id']+'.json')).is_file())
 
     def test_current_windows_correction_precedes_archived_context(self):
+        """Verify current windows correction precedes archived context."""
         packet=self.console.prepare(self.body())
         self.assertLess(packet['prompt'].index(CURRENT_CORRECTION),packet['prompt'].index('Archived evidence'))
         self.assertNotIn('fictional-secret',packet['prompt'])
@@ -65,6 +80,7 @@ class AgentConsoleTests(unittest.TestCase):
         self.assertEqual(packet['profile'][0]['sha256'],'a'*64)
 
     def test_every_role_uses_same_task_and_stays_planned(self):
+        """Verify every role uses same task and stays planned."""
         packet=self.console.prepare(self.body())
         plan=packet['team_plan']
         self.assertEqual([x['role'] for x in plan['roles']],['planner','researcher','coder','reviewer'])
@@ -75,6 +91,7 @@ class AgentConsoleTests(unittest.TestCase):
         self.assertFalse(packet['budget']['automatic_paid_requests'])
 
     def test_existing_task_is_not_marked_done_or_duplicated(self):
+        """Verify existing task is not marked done or duplicated."""
         first=self.console.prepare(self.body())
         with self.db.connect() as c:c.execute("UPDATE hub_requests SET status='blocked' WHERE id=?",(first['task_id'],))
         second=self.console.prepare(self.body(prompt='Review the existing task',task_id=first['task_id'],target='claude'))
@@ -83,6 +100,7 @@ class AgentConsoleTests(unittest.TestCase):
         with self.assertRaises(HTTPException):self.console.prepare(self.body(task_id=99999))
 
     def test_unknown_target_fields_and_paths_are_rejected(self):
+        """Verify unknown target fields and paths are rejected."""
         for data in [self.body(target='shell'),self.body(target_url='https://evil.test'),self.body(task_id=True),self.body(prompt='  ')]:
             with self.assertRaises(ValidationError):HandoffBody.model_validate(data)
         for ident in ['../secrets','x'*64,'1','/etc/passwd']:
@@ -92,6 +110,7 @@ class AgentConsoleTests(unittest.TestCase):
         self.assertEqual(row['url'],TARGETS['claude']['url']);self.assertFalse(row['authentication_verified']);self.assertFalse(row['cloud_execution_enabled'])
 
     def test_memory_unavailable_is_explicit_not_fabricated(self):
+        """Verify memory unavailable is explicit not fabricated."""
         def fail(*args):raise OSError('fixture unavailable')
         packet=self.make_console(context_loader=fail).prepare(self.body())
         self.assertEqual(packet['context']['status'],'unavailable')
@@ -99,6 +118,7 @@ class AgentConsoleTests(unittest.TestCase):
         self.assertTrue(packet['warnings'])
 
     def test_large_profile_is_bounded_before_read_and_artifact_integrity_checked(self):
+        """Verify large profile is bounded before read and artifact integrity checked."""
         profile_root=self.root/'profile';(profile_root/'context').mkdir(parents=True)
         (profile_root/'context/user.md').write_text('x'*70000)
         profile=profile_context('nexen',profile_root)
@@ -108,6 +128,7 @@ class AgentConsoleTests(unittest.TestCase):
         with self.assertRaises(HTTPException):self.console.get(packet['id'])
 
     def test_api_requires_origin_for_preparation(self):
+        """Verify api requires origin for preparation."""
         app=FastAPI()
         with patch('agents_console.AgentsConsole',return_value=self.console):register(app,self.db)
         async def run():
@@ -122,6 +143,7 @@ class AgentConsoleTests(unittest.TestCase):
         asyncio.run(run())
 
     def test_target_markup_exposes_each_supported_provider_once(self):
+        """Verify target markup exposes each supported provider once."""
         class TargetOptions(HTMLParser):
             def __init__(self):
                 super().__init__()

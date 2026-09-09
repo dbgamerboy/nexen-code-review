@@ -14,23 +14,28 @@ import app_auth
 
 class ServiceKeyTests(unittest.TestCase):
     def setUp(self):
+        """Prepare shared test fixtures."""
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
 
     def tearDown(self):
+        """Clean up shared test fixtures."""
         self.temp.cleanup()
 
     def request(self, value='', path='/api/hub/digest'):
+        """Perform the request operation."""
         return Request({'type': 'http', 'method': 'POST', 'path': path,
             'query_string': b'', 'headers': [(b'host', b'127.0.0.1:8788'),
                                             (b'x-nexen-service', value.encode('utf-8'))],
             'client': ('127.0.0.1', 55000), 'server': ('127.0.0.1', 8788), 'scheme': 'http'})
 
     def gate(self, store):
+        """Perform the gate operation."""
         with patch.object(app_auth, 'AuthStore', return_value=store):
             return app_auth.register(FastAPI())
 
     def test_invalid_existing_key_rejects_startup_without_replacing_file(self):
+        """Verify invalid existing key rejects startup without replacing file."""
         for index, content in enumerate((b'', b' \n', b'partial', b'a' * 63,
                                          b'a' * 65, b'\xff' * 64, b'a' * 64 + b' ' * 65)):
             with self.subTest(index=index):
@@ -43,6 +48,7 @@ class ServiceKeyTests(unittest.TestCase):
                 self.assertEqual(path.read_bytes(), content)
 
     def test_gate_rejects_empty_partial_and_nonascii_in_memory_key(self):
+        """Verify gate rejects empty partial and nonascii in memory key."""
         store = app_auth.AuthStore(self.root)
         gate = self.gate(store)
         for value in ('', 'short', '\u00e9' * 64):
@@ -50,6 +56,7 @@ class ServiceKeyTests(unittest.TestCase):
             self.assertEqual(gate(self.request(value)).status_code, 401)
 
     def test_existing_valid_key_is_stable_and_service_scope_stays_narrow(self):
+        """Verify existing valid key is stable and service scope stays narrow."""
         store = app_auth.AuthStore(self.root)
         content = store.key_path.read_bytes()
         second = app_auth.AuthStore(self.root)
@@ -63,6 +70,7 @@ class ServiceKeyTests(unittest.TestCase):
         self.assertEqual(gate(private).status_code, 401)
 
     def test_atomic_publication_and_concurrent_start_share_complete_winner(self):
+        """Verify atomic publication and concurrent start share complete winner."""
         before_publish = threading.Event()
         release = threading.Event()
         original = app_auth.os.replace
@@ -98,6 +106,7 @@ class ServiceKeyTests(unittest.TestCase):
         self.assertEqual(list(self.root.glob('.service-key-*.tmp')), [])
 
     def test_failed_publication_leaves_no_credential_and_next_start_recovers(self):
+        """Verify failed publication leaves no credential and next start recovers."""
         with patch.object(app_auth.os, 'replace', side_effect=OSError('fixture disk fault')):
             with self.assertRaises(OSError):
                 app_auth.AuthStore(self.root)

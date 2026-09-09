@@ -14,6 +14,7 @@ import pc_control as pc
 
 class DesktopStorageTests(unittest.TestCase):
     def setUp(self):
+        """Prepare shared test fixtures."""
         root = Path('H:/NEXEN/work/tests')
         root.mkdir(parents=True, exist_ok=True)
         self.temp = tempfile.TemporaryDirectory(prefix='pc-storage-', dir=root)
@@ -35,11 +36,13 @@ class DesktopStorageTests(unittest.TestCase):
             item.start()
 
     def tearDown(self):
+        """Clean up shared test fixtures."""
         for item in reversed(self.patches):
             item.stop()
         self.temp.cleanup()
 
     def test_unverified_apps_never_spawn_even_when_executable_exists(self):
+        """Verify unverified apps never spawn even when executable exists."""
         for app_id in ('claude', 'discord', 'everything', 'chrome'):
             with self.subTest(app_id=app_id):
                 status = pc.app_status(self.apps[app_id])
@@ -52,6 +55,7 @@ class DesktopStorageTests(unittest.TestCase):
         self.db.event.assert_not_called()
 
     def test_fl_launch_uses_hf_environment_without_mp3_validator(self):
+        """Verify fl launch uses hf environment without mp3 validator."""
         result = self.launcher.launch('flstudio')
         self.assertEqual(result['pid'], 9876)
         self.assertEqual(self.spawn.call_args.args, ([str(self.executable)],))
@@ -71,6 +75,7 @@ class DesktopStorageTests(unittest.TestCase):
                          ['pc_launch_requested', 'pc_launch_started'])
 
     def test_changed_user_data_is_rechecked_before_spawn(self):
+        """Verify changed user data is rechecked before spawn."""
         self.native.user_data_path.side_effect = [self.root, ValueError('changed to C:')]
         with self.assertRaises(HTTPException) as error:
             self.launcher.launch('flstudio')
@@ -79,6 +84,7 @@ class DesktopStorageTests(unittest.TestCase):
         self.spawn.assert_not_called()
 
     def test_unreadable_user_data_status_fails_closed(self):
+        """Verify unreadable user data status fails closed."""
         self.native.user_data_path.side_effect = OSError('fixture registry unavailable')
         status = pc.app_status(self.apps['flstudio'])
         self.assertTrue(status['installed'])
@@ -89,6 +95,7 @@ class DesktopStorageTests(unittest.TestCase):
         self.spawn.assert_not_called()
 
     def test_running_fl_and_unavailable_process_probe_never_spawn(self):
+        """Verify running fl and unavailable process probe never spawn."""
         for state in (True, subprocess.TimeoutExpired('tasklist', 8)):
             with self.subTest(state=type(state).__name__):
                 self.launcher = pc.Launcher(self.db, spawn=self.spawn)
@@ -100,6 +107,7 @@ class DesktopStorageTests(unittest.TestCase):
         self.spawn.assert_not_called()
 
     def test_wrong_output_root_rejects_without_creating_c_profile(self):
+        """Verify wrong output root rejects without creating c profile."""
         with patch.object(pc, 'MUSIC_ROOT', Path('C:/nexen-fixture-must-never-create')):
             with self.assertRaises(HTTPException) as error:
                 self.launcher.launch('flstudio')
@@ -107,6 +115,7 @@ class DesktopStorageTests(unittest.TestCase):
         self.spawn.assert_not_called()
 
     def test_log_failure_stops_dispatch_and_environment_creation(self):
+        """Verify log failure stops dispatch and environment creation."""
         self.db.event.side_effect = RuntimeError('fixture audit database unavailable')
         with patch.object(pc, 'tool_environment') as environment:
             with self.assertRaises(HTTPException) as error:
@@ -116,6 +125,7 @@ class DesktopStorageTests(unittest.TestCase):
         self.spawn.assert_not_called()
 
     def test_cooldown_and_fixed_target_contract_survive(self):
+        """Verify cooldown and fixed target contract survive."""
         self.launcher.launch('flstudio')
         with self.assertRaises(HTTPException) as error:
             self.launcher.launch('flstudio')
@@ -127,6 +137,7 @@ class DesktopStorageTests(unittest.TestCase):
         self.assertEqual(self.spawn.call_count, 1)
 
     def test_spawn_failure_preserves_failed_action_event(self):
+        """Verify spawn failure preserves failed action event."""
         self.spawn.side_effect = OSError('fixture process failure')
         with self.assertRaises(HTTPException) as error:
             self.launcher.launch('flstudio')
@@ -134,6 +145,7 @@ class DesktopStorageTests(unittest.TestCase):
         self.assertEqual(self.db.event.call_args.args[0], 'pc_launch_failed')
 
     def test_http_origin_peer_and_fixed_body_guards_preserved(self):
+        """Verify http origin peer and fixed body guards preserved."""
         app = FastAPI()
         controller = pc.register(app, self.db)
         controller.spawn = self.spawn

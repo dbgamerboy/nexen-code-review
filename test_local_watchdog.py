@@ -10,12 +10,14 @@ TEST_ROOT = module.BASE / "work" / "watchdog-tests"
 
 
 def setUpModule():
+    """Perform the setUpModule operation."""
     global TEST_ROOT, _test_root
     _test_root = tempfile.TemporaryDirectory(prefix='watchdog-tests-')
     TEST_ROOT = Path(_test_root.name)
 
 
 def tearDownModule():
+    """Perform the tearDownModule operation."""
     _test_root.cleanup()
 
 

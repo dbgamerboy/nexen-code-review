@@ -12,6 +12,7 @@ import nexen
 
 class ReviewRuntimeTests(unittest.TestCase):
     def setUp(self):
+        """Prepare shared test fixtures."""
         root = Path(__file__).resolve().parent / 'work' / 'review-runtime-tests'
         root.mkdir(parents=True, exist_ok=True)
         self.temp = tempfile.TemporaryDirectory(dir=root)
@@ -20,6 +21,7 @@ class ReviewRuntimeTests(unittest.TestCase):
         self.db = nexen.DB(self.base / 'test.sqlite3')
 
     def test_confidence_variants_preserve_items_and_valid_zero(self):
+        """Verify confidence variants preserve items and valid zero."""
         values = ['high', None, 0, -5, 9, 'NaN', 'Infinity', {}, True, .7]
         analyzer = nexen.Analyzer(self.db, None)
         analyzer.persist(None, {'items': [
@@ -30,6 +32,7 @@ class ReviewRuntimeTests(unittest.TestCase):
             [.5, .5, 0, 0, 1, .5, .5, .5, .5, .7])
 
     def test_two_supervisors_claim_one_job_once(self):
+        """Verify two supervisors claim one job once."""
         self.db.enqueue('analyze_file', {'file_id': 1})
         real_rows = self.db.rows
         selected = threading.Barrier(2)

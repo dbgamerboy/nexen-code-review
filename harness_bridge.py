@@ -119,6 +119,7 @@ class HarnessBridge:
         return env
 
     def _catalog(self):
+        """Perform the catalog operation."""
         path = self.runtime_root / 'harnesses/status.json'
         if not path.is_file():
             return {}
@@ -140,6 +141,7 @@ class HarnessBridge:
         return entries.get(provider, [])
 
     def _auth_probe(self, provider):
+        """Perform the auth probe operation."""
         if provider not in ('claude', 'codex'):
             return {'verified': False, 'reason': 'No verified authentication status command'}
         entry = self._entry(provider)
@@ -162,6 +164,7 @@ class HarnessBridge:
         return report
 
     def status(self, probe_auth=False, probe_local=True):
+        """Return the current runtime status."""
         catalog, providers = self._catalog(), []
         for name in PROVIDERS:
             entry = self._entry(name)
@@ -263,6 +266,7 @@ class HarnessBridge:
         return self.prepare_many([provider],query,task_type,max_chars,limit)
 
     def _generate_local(self, prompt, model, timeout=60, max_tokens=512):
+        """Perform the generate local operation."""
         if not isinstance(model,str) or not model or len(model)>256:
             raise ValueError('Select an exact installed model')
         timeout=max(5,min(float(timeout),90));max_tokens=max(16,min(int(max_tokens),1024))

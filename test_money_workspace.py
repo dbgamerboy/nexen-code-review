@@ -18,10 +18,12 @@ from task_tracking import TaskCreate, TaskUpdate
 
 class DB:
     def __init__(self, path):
+        """Initialize the DB instance."""
         self.path = path
 
     @contextmanager
     def connect(self):
+        """Perform the connect operation."""
         c = sqlite3.connect(self.path, timeout=10)
         c.row_factory = sqlite3.Row
         try:
@@ -31,10 +33,12 @@ class DB:
             c.close()
 
     def rows(self, sql, params=()):
+        """Perform the rows operation."""
         with self.connect() as c:
             return [dict(row) for row in c.execute(sql, params)]
 
     def scalar(self, sql, params=()):
+        """Perform the scalar operation."""
         with self.connect() as c:
             row = c.execute(sql, params).fetchone()
             return row[0] if row else None
@@ -42,6 +46,7 @@ class DB:
 
 class MoneyWorkspaceTests(unittest.TestCase):
     def setUp(self):
+        """Prepare shared test fixtures."""
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.db = DB(self.root / 'tasks.sqlite3')
@@ -49,17 +54,21 @@ class MoneyWorkspaceTests(unittest.TestCase):
         self.workspace = MoneyWorkspace(self.db, self.engine)
 
     def tearDown(self):
+        """Clean up shared test fixtures."""
         self.temp.cleanup()
 
     def task(self, text='A bounded next action', key=None, status='planned', priority='normal'):
+        """Perform the task operation."""
         return self.workspace.tracker.create(TaskCreate(text=text, priority=priority),
                                              seed_key=key, initial_status=status)
 
     def body(self, **values):
+        """Perform the body operation."""
         return WorkspaceTaskBody(text='Review product photo rights', track_id='lumipaw',
                                  request_key='a' * 32, **values)
 
     def test_exact_seed_mapping_all_tracks_and_no_keyword_inference(self):
+        """Verify exact seed mapping all tracks and no keyword inference."""
         keys = {'housing': 'rent-calls', 'lumipaw': 'store-supplier', 'wdr': 'wdr-store',
                 'music': 'music-releases', 'nexen-product': 'public-product', 'other': 'automation-ranking'}
         ids = {track: self.task(key=key) for track, key in keys.items()}
@@ -76,6 +85,7 @@ class MoneyWorkspaceTests(unittest.TestCase):
         self.assertEqual(sum(map(len, SEED_GROUPS.values())), len(SEED_TRACKS))
 
     def test_saved_link_wins_and_survives_reconstruction_without_task_mutation(self):
+        """Verify saved link wins and survives reconstruction without task mutation."""
         ident = self.task(key='store-payment', status='blocked')
         before = self.workspace.tracker.get(ident)
         self.workspace.link(ident, 'music')
@@ -88,6 +98,7 @@ class MoneyWorkspaceTests(unittest.TestCase):
         self.assertEqual(music['blocked_count'], 1)
 
     def test_all_opportunities_kept_and_seed_alias_uses_existing_business(self):
+        """Verify all opportunities kept and seed alias uses existing business."""
         ident = self.engine.create(OpportunityCreate(title='Original new service', category='service'))
         task_id = self.task()
         self.workspace.link(task_id, 'opportunity-' + str(ident))
@@ -102,6 +113,7 @@ class MoneyWorkspaceTests(unittest.TestCase):
         self.assertEqual(self.workspace.link(task_id, 'opportunity-' + str(lumipaw_id))['track_id'], 'lumipaw')
 
     def test_completion_and_reopen_read_authoritative_tracker_history(self):
+        """Verify completion and reopen read authoritative tracker history."""
         ident = self.task(key='ad-video')
         with patch('completion_memory.export_journal', return_value={'status': 'fixture'}):
             self.workspace.tracker.update(ident, TaskUpdate(status='done', outcome='Prepared reviewed draft'))
@@ -117,6 +129,7 @@ class MoneyWorkspaceTests(unittest.TestCase):
         self.assertFalse(reopened['next_task']['provider_verified'])
 
     def test_pagination_discloses_scope_and_unassigned_never_disappear(self):
+        """Verify pagination discloses scope and unassigned never disappear."""
         ids = {self.task(text='Legacy task ' + str(i)) for i in range(4)}
         pages = [self.workspace.workspace(offset, 2) for offset in (0, 2)]
         self.assertEqual({task['id'] for page in pages for task in page['unassigned_tasks']}, ids)
@@ -129,6 +142,7 @@ class MoneyWorkspaceTests(unittest.TestCase):
         self.assertIsNone(pages[1]['coverage']['next_offset'])
 
     def test_urgent_done_excluded_and_next_action_order_is_saved_priority(self):
+        """Verify urgent done excluded and next action order is saved priority."""
         normal = self.task(key='store-supplier')
         urgent = self.task(key='store-domain', priority='urgent')
         self.task(key='store-payment', status='done', priority='urgent')
@@ -140,6 +154,7 @@ class MoneyWorkspaceTests(unittest.TestCase):
         self.assertIn(normal, [row['id'] for row in track['tasks']])
 
     def test_create_is_atomic_idempotent_and_replay_preserves_later_edits(self):
+        """Verify create is atomic idempotent and replay preserves later edits."""
         first = self.workspace.create(self.body())
         self.assertTrue(first['created'])
         self.assertFalse(first['executed'])
@@ -158,6 +173,7 @@ class MoneyWorkspaceTests(unittest.TestCase):
         self.assertEqual(conflict.exception.status_code, 409)
 
     def test_creation_rolls_back_if_track_insert_fails(self):
+        """Verify creation rolls back if track insert fails."""
         with self.db.connect() as c:
             c.execute("CREATE TRIGGER reject_link BEFORE INSERT ON money_task_tracks BEGIN SELECT RAISE(ABORT,'fixture fault'); END")
         with self.assertRaises(sqlite3.IntegrityError):
@@ -166,6 +182,7 @@ class MoneyWorkspaceTests(unittest.TestCase):
             self.assertEqual(self.db.scalar('SELECT count(*) FROM ' + table), 0)
 
     def test_concurrent_same_request_creates_once(self):
+        """Verify concurrent same request creates once."""
         with ThreadPoolExecutor(max_workers=2) as executor:
             results = list(executor.map(lambda _: self.workspace.create(self.body()), range(2)))
         self.assertEqual(results[0]['task_id'], results[1]['task_id'])
@@ -173,6 +190,7 @@ class MoneyWorkspaceTests(unittest.TestCase):
         self.assertEqual(self.db.scalar('SELECT count(*) FROM hub_requests'), 1)
 
     def test_unknown_ids_rejected_before_any_task_changes(self):
+        """Verify unknown ids rejected before any task changes."""
         ident = self.task()
         for task_id, track_id in [(999, 'music'), (ident, 'unknown'), (ident, 'opportunity-999')]:
             with self.assertRaises(HTTPException) as missing:
@@ -184,6 +202,7 @@ class MoneyWorkspaceTests(unittest.TestCase):
         self.assertEqual(self.db.scalar('SELECT count(*) FROM money_task_tracks'), 0)
 
     def test_real_auth_gate_origin_and_http_contract(self):
+        """Verify real auth gate origin and http contract."""
         import app_auth
         store = app_auth.AuthStore(self.root / 'auth')
         token = store.setup('fixture-password-only-123')

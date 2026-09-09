@@ -51,6 +51,7 @@ class Requirements:
 
 class NextTests(unittest.TestCase):
     def setUp(self):
+        """Prepare shared test fixtures."""
         self.temp = tempfile.TemporaryDirectory(prefix='next-step-')
         self.addCleanup(self.temp.cleanup)
         self.folder = Path(self.temp.name)
@@ -150,6 +151,7 @@ class NextTests(unittest.TestCase):
         self.assertEqual(self.db.scalar('SELECT count(*) FROM task_history'), 0)
 
     def test_malformed_seed_containers_do_not_prevent_startup_or_change_tasks(self):
+        """Verify malformed seed containers do not prevent startup or change tasks."""
         ident = self.task('rent')
         for payload in ([], None, 42, 'invalid', {'tasks':None}, {'tasks':{}}, {'tasks':'invalid'}):
             with self.subTest(payload=payload):

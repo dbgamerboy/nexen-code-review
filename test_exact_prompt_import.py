@@ -11,11 +11,13 @@ from memory_bridge import SharedMemory
 
 class ExactTests(unittest.TestCase):
     def setUp(self):
+        """Prepare shared test fixtures."""
         self.temp=tempfile.TemporaryDirectory(prefix='exact-prompts-')
         self.addCleanup(self.temp.cleanup)
         self.base=Path(self.temp.name)
 
     def test_report_uses_actual_packet_count_without_claiming_test_execution(self):
+        """Verify report uses actual packet count without claiming test execution."""
         with tempfile.TemporaryDirectory(dir=self.base) as folder:
             base=Path(folder)
             (base/'source-report.json').write_text(json.dumps(dict(sources=[],checked_at='fixture',read_files=0,read_bytes=0,packages=[{},{}],unique_structured_prompts=0,structured_source_occurrences=0)),encoding='utf-8')
@@ -36,6 +38,7 @@ class ExactTests(unittest.TestCase):
         self.assertEqual(other[0]['original_status'],'NOT RUN')
         self.assertEqual(other[0]['execution_status'],'not_executed')
     def test_import_keeps_originals_and_makes_csv_searchable(self):
+        """Verify import keeps originals and makes csv searchable."""
         base=self.base;root=base/'01_EXACT_PROMPTS_AND_CHATS';root.mkdir()
         path=root/'WDR_160_PROMPTS_EXACT.csv';path.write_text('prompt_number,title,exact_body\n1,Fixture,wardrobe source password=fixture-private\n',encoding='utf-8')
         before=hashlib.sha256(path.read_bytes()).hexdigest();db=DB(str(base/'nexen.db'))
@@ -52,6 +55,7 @@ class ExactTests(unittest.TestCase):
     @staticmethod
     def db_jobs(db):return db.scalar('SELECT count(*) FROM jobs')
     def test_large_and_pdf_coverage_are_unread_not_hashed(self):
+        """Verify large and pdf coverage are unread not hashed."""
         base=self.base;root=base/'source';root.mkdir()
         (root/'large.txt').write_text('x'*(1048576+1),encoding='utf-8');(root/'reference.pdf').write_bytes(b'not parsed')
         result=import_sources(DB(str(base/'nexen.db')),[root],base/'packets')

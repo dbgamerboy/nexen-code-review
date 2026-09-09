@@ -16,19 +16,24 @@ from task_tracking import Tracker,TaskCreate,TaskUpdate
 
 
 class DB:
-    def __init__(self,path):self.path=path;self.memory_vault=path.parent/'vault'
+    def __init__(self,path):
+        """Initialize the DB instance."""
+        self.path=path;self.memory_vault=path.parent/'vault'
     @contextmanager
     def connect(self):
+        """Perform the connect operation."""
         c=sqlite3.connect(self.path,timeout=10);c.row_factory=sqlite3.Row
         try:
             with c:yield c
         finally:c.close()
     def rows(self,sql,args=()):
+        """Perform the rows operation."""
         with self.connect() as c:return [dict(r) for r in c.execute(sql,args)]
 
 
 class RuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        """Perform the asyncSetUp operation."""
         self.temp=tempfile.TemporaryDirectory(dir='H:/NEXEN/temp');self.root=Path(self.temp.name)
         self.db=DB(self.root/'tasks.sqlite3');self.tracker=Tracker(self.db);self.now=1788970000.
         self.state=self.root/'state';self.state.mkdir();self.profile=self.root/'user.md'
@@ -37,15 +42,19 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.task=self.tracker.create(TaskCreate(text='Fixture task password=fixture-private-key',priority='urgent'))
         self.workers=[];self.runtime=self.make()
     def make(self,**kwargs):
+        """Create the operation."""
         runtime=m.HandoffRuntime(self.db,root=self.root/'handoffs',state=self.state,profile=self.profile,base=self.base,clock=lambda:self.now,interval=.05,**kwargs)
         self.workers.append(runtime);return runtime
     async def asyncTearDown(self):
+        """Perform the asyncTearDown operation."""
         for worker in self.workers:await worker.shutdown()
         self.temp.cleanup()
     def payload(self,runtime=None):
+        """Perform the payload operation."""
         runtime=runtime or self.runtime;latest=runtime.latest()
         return json.loads((runtime.root/(latest['snapshot']+'.json')).read_text())
     async def test_startup_checkpoint_then_hourly_only_and_singleton(self):
+        """Verify startup checkpoint then hourly only and singleton."""
         self.assertTrue(await self.runtime.start());first=self.runtime.latest();self.assertIsNotNone(first)
         self.assertFalse(await self.runtime.start());self.assertFalse(await self.make().start())
         self.now+=3599;self.assertEqual(self.runtime.checkpoint()['reason'],'not_due')
@@ -61,6 +70,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(self.runtime.latest()['snapshot'],first['snapshot'])
         self.assertEqual(len(list(self.runtime.root.glob('handoff-*.json'))),2)
     async def test_task_record_is_authoritative_no_completion_or_egress_mutation(self):
+        """Verify task record is authoritative no completion or egress mutation."""
         before=self.tracker.get(self.task)
         await self.runtime.start();data=self.payload()
         self.assertEqual(self.tracker.get(self.task),before)
@@ -71,6 +81,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.now+=3600;self.runtime.checkpoint();data=self.payload()
         self.assertEqual(data['tasks'][0]['status'],'done');self.assertIn('not independently verified execution',data['tasks'][0]['completion_basis'])
     async def test_inputs_bounded_filtered_and_handoff_links_only(self):
+        """Verify inputs bounded filtered and handoff links only."""
         for i in range(12):self.tracker.create(TaskCreate(text='Other fixture '+str(i)))
         (self.state/'code-review.json').write_text(json.dumps({'status':'review_complete','pr_verified':True,'pr_url':'https://untrusted.invalid/steal','token':'do-not-copy','snapshot_sha256':'a'*64}))
         (self.state/'openrouter-install.json').write_text(json.dumps({'key_verified':True,'api_key':'do-not-copy-key','model_url':'http://private-host/'}))
@@ -85,6 +96,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(data['sources'])
         self.assertTrue(all(source.get('sha256') is None or len(source['sha256'])==64 for source in data['sources']))
     async def test_partial_write_keeps_previous_atomic_latest_and_allows_immediate_retry(self):
+        """Verify partial write keeps previous atomic latest and allows immediate retry."""
         await self.runtime.start();before=self.runtime.latest();original=self.runtime.atomic
         def fail(name,raw):
             if name.endswith('.md'):raise OSError('private fixture failure')
@@ -96,6 +108,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.runtime.checkpoint()['written'])
         self.assertEqual(self.runtime.checkpoint()['reason'],'not_due')
     async def test_failed_initial_checkpoint_retries_on_next_worker_interval(self):
+        """Verify failed initial checkpoint retries on next worker interval."""
         with patch.object(self.runtime,'atomic',side_effect=OSError('Fixture unavailable output')):
             await self.runtime.start()
         self.assertIsNone(self.runtime.last_attempt)
@@ -106,11 +119,13 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(self.runtime.latest())
         self.assertEqual(self.runtime.last_attempt,self.now)
     async def test_atomic_replace_failure_preserves_existing_bytes(self):
+        """Verify atomic replace failure preserves existing bytes."""
         await self.runtime.start();path=self.runtime.root/'LATEST.json';before=path.read_bytes()
         with patch.object(m.os,'replace',side_effect=OSError('fixture')):
             with self.assertRaises(OSError):self.runtime.atomic('LATEST.json',b'changed')
         self.assertEqual(path.read_bytes(),before);self.assertEqual(list(self.runtime.root.glob('.*.tmp')),[])
     async def test_retention_only_exact_owned_pairs_and_protects_latest_after_clock_change(self):
+        """Verify retention only exact owned pairs and protects latest after clock change."""
         runtime=self.make(retention=2);await runtime.start()
         unknown=runtime.root/'notes.md';unknown.write_text('keep original')
         fake=runtime.root/'handoff-20200101T000000000000Z-aaaaaaaaaaaa.json';fake.write_text('{}')
@@ -120,16 +135,19 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.now-=86400;runtime.checkpoint(startup=True)
         self.assertIsNotNone(runtime.latest());self.assertEqual(len([p for p in runtime.root.glob('handoff-*.json') if p!=fake]),2)
     async def test_pause_markers_remain_and_checkpoint_is_not_model_work(self):
+        """Verify pause markers remain and checkpoint is not model work."""
         marker=self.base/'data/PAUSE_AUTONOMY';marker.write_text('existing user pause')
         await self.runtime.start();data=self.payload()
         self.assertTrue(data['pause_markers']['autonomy']);self.assertEqual(marker.read_text(),'existing user pause')
         self.assertEqual((data['model_calls'],data['cloud_submissions'],data['task_mutations']),(0,0,0))
     async def test_bad_or_oversized_sources_are_unknown_not_crashes(self):
+        """Verify bad or oversized sources are unknown not crashes."""
         self.profile.write_bytes(b'\xff\xfeinvalid');(self.state/'kilo-install.json').write_text('x'*70000)
         await self.runtime.start();data=self.payload()
         self.assertEqual(data['current_preferences'],'');self.assertTrue(data['warnings'])
         self.assertFalse(data['providers']['kilo']['live_draft_verified'])
     async def test_modified_snapshot_is_not_reported_as_valid_latest(self):
+        """Verify modified snapshot is not reported as valid latest."""
         await self.runtime.start();latest=self.runtime.latest()
         (self.runtime.root/(latest['snapshot']+'.md')).write_text('tampered')
         self.assertIsNone(self.runtime.latest());self.assertIsNone(self.runtime.status()['latest'])
@@ -137,6 +155,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
 
 class RouteTests(unittest.TestCase):
     def test_status_and_checkpoint_keep_session_and_origin_guards(self):
+        """Verify status and checkpoint keep session and origin guards."""
         from app_lifecycle import lifespan
         with tempfile.TemporaryDirectory(dir='H:/NEXEN/temp') as directory:
             root=Path(directory);db=DB(root/'fixture.sqlite3');Tracker(db)

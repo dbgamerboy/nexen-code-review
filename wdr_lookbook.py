@@ -54,6 +54,7 @@ def image_type(head):
 
 
 def load_index(path=INDEX):
+    """Load index."""
     try:
         value = json.loads(Path(path).read_text(encoding='utf-8'))
         validate_index(value)
@@ -65,10 +66,16 @@ def load_index(path=INDEX):
 def validate_index(value):
     """Validate the complete read contract without repairing or discarding provenance."""
     def require(condition):
+        """Require the operation."""
         if not condition: raise ValueError('Invalid catalogue structure')
-    def number(value): return type(value) is int and value >= 0
-    def text(value): return isinstance(value,str)
+    def number(value):
+        """Perform the number operation."""
+        return type(value) is int and value >= 0
+    def text(value):
+        """Perform the text operation."""
+        return isinstance(value,str)
     def relative(value):
+        """Perform the relative operation."""
         return (text(value) and bool(value) and not any(c in value for c in ('\\',':','\x00'))
                 and all(part not in ('','.','..') for part in value.split('/')))
     require(isinstance(value,dict))

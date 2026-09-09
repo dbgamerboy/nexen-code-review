@@ -283,6 +283,7 @@ def check_agentic_os():
 
 
 def draft_schema(source_refs, profile):
+    """Perform the draft schema operation."""
     refs = list(dict.fromkeys(source_refs or []))
     if not refs or any(not isinstance(ref, str) or not re.fullmatch(r's[1-9][0-9]{0,4}', ref) for ref in refs):
         raise ValueError('A local draft requires the exact included source segment IDs.')
@@ -299,6 +300,7 @@ def draft_schema(source_refs, profile):
 
 
 def local_draft(prompt, model, *, profile='workflow', source_refs=None):
+    """Perform the local draft operation."""
     from local_lab import BASE_URL
     schema = draft_schema(source_refs, profile)
     # Reuse the existing fixed loopback Ollama contract; no provider fallback.
@@ -342,6 +344,7 @@ def evidence_packet(source, budget=18000):
 
 
 def compile_prompt(source, kind):
+    """Perform the compile prompt operation."""
     chosen = evidence_packet(source, budget=6000 if kind == 'guide' else 18000)
     step_rule = ('Use 2 to 5 short steps, each instruction at most 25 words; summary at most 35 words and at most 2 short blockers. '
                  if kind == 'guide' else 'Use at most 16 steps. ')
@@ -358,6 +361,7 @@ def compile_prompt(source, kind):
 
 
 def validate_draft(raw, source, kind, model, chosen):
+    """Validate draft."""
     if isinstance(raw, str):
         raw = raw.strip()
         if raw.startswith('```'):
@@ -647,6 +651,7 @@ class YouTubeMemory:
 
     def process_compile(self, ident):
         # This lock also protects direct callers in tests and local scripts.
+        """Process compile."""
         with self.lock:
             token = uuid.uuid4().hex
             with self.db.connect() as c:
@@ -718,6 +723,7 @@ class YouTubeMemory:
 
 
 def register(app, db):
+    """Register the runtime routes and lifecycle hooks."""
     from app_lifecycle import register_lifecycle
     from pc_control import validate_request
     service = YouTubeMemory(db)

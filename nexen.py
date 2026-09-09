@@ -282,6 +282,7 @@ class Ingestor:
             return bool(r and r["size_bytes"] == st.st_size and abs(r["mtime"] - st.st_mtime) < .0001)
 
     def scan(self, stop_requested=None):
+        """Perform the scan operation."""
         stats = dict(seen=0, indexed=0, unchanged=0, skipped=0, errors=0)
         for root_s in self.cfg["ingestion"]["roots"]:
             root = Path(root_s)
@@ -354,12 +355,14 @@ class ModelRouter:
     SHUTDOWN_BUDGET_SECONDS = 90  # Owned provider cancellation, two 30s DB waits and cleanup.
 
     def __init__(self, cfg: dict, event=None, stop_requested=None):
+        """Initialize the ModelRouter instance."""
         self.cfg = cfg
         self.event = event
         self.supervised = stop_requested is not None
         self.stop_requested = stop_requested or (lambda: False)
 
     def request_timeout(self, configured=None):
+        """Perform the request timeout operation."""
         seconds = self.REQUEST_TIMEOUT_SECONDS if configured is None else float(configured)
         seconds = max(1, min(self.REQUEST_TIMEOUT_SECONDS, seconds))
         return httpx.Timeout(seconds, connect=self.CONNECTION_TIMEOUT_SECONDS,
@@ -368,6 +371,7 @@ class ModelRouter:
     def _failure(self, provider: str, error: Exception) -> None:
         # Provider exceptions can contain request URLs, keys and private prompts.
         # Persist only code-owned provider names, error types and numeric status.
+        """Perform the failure operation."""
         data = {'provider': provider, 'error_class': getattr(error, 'provider_error_class', type(error).__name__)}
         status = getattr(error, 'status_code', None)
         if status is None:
@@ -404,6 +408,7 @@ class ModelRouter:
         return None
 
     def ollama(self, prompt: str):
+        """Perform the ollama operation."""
         o = self.cfg["models"]["ollama"]
         if self.stop_requested() or not o.get("enabled"):
             return None
@@ -424,6 +429,7 @@ class ModelRouter:
             return None
 
     def openai(self, prompt: str, hard=False):
+        """Perform the openai operation."""
         if self.stop_requested() or not self.cfg["models"]["openai"].get("enabled") or not os.getenv("OPENAI_API_KEY"):
             return None
         try:
@@ -440,6 +446,7 @@ class ModelRouter:
             return None
 
     def anthropic(self, prompt: str):
+        """Perform the anthropic operation."""
         a = self.cfg["models"]["anthropic"]
         if self.stop_requested() or not a.get("enabled") or not os.getenv("ANTHROPIC_API_KEY"):
             return None
@@ -456,6 +463,7 @@ class ModelRouter:
             return None
 
     def text(self, prompt: str, hard=False):
+        """Perform the text operation."""
         if self.stop_requested():return None
         try:
             from memory_runtime import enrich_prompt
@@ -526,6 +534,7 @@ class Analyzer:
         return {"items":items,"workflows":workflows}
 
     def persist(self, file_id: int, result: dict):
+        """Perform the persist operation."""
         now = utcnow()
         with self.db.connect() as c:
             for item in result.get("items", [])[:200]:
@@ -559,10 +568,12 @@ class Analyzer:
 
 class ToolFabric:
     def __init__(self, db: DB, cfg: dict, stop_requested=None):
+        """Initialize the ToolFabric instance."""
         self.db, self.cfg = db, cfg
         self.stop_requested = stop_requested or (lambda: False)
 
     def probe(self, exe: str):
+        """Perform the probe operation."""
         for cmd in ([exe,"--version"],[exe,"-v"],[exe,"version"]):
             if self.stop_requested():return None, 'interrupted'
             try:
@@ -575,6 +586,7 @@ class ToolFabric:
         return None, "unknown"
 
     def discover(self):
+        """Perform the discover operation."""
         manifest = load_yaml(BASE / "config" / "tools.yaml")
         found = unresolved = 0
         for tool in manifest.get("tools", []):
@@ -677,6 +689,7 @@ class Jarvis:
         }
 
     def build(self):
+        """Build the operation."""
         s = self.snapshot()
         events = self.db.rows("SELECT level,event_type,message,created_at FROM events ORDER BY id DESC LIMIT 12")
         base = "NEXEN JARVIS — " + datetime.now().strftime("%Y-%m-%d %H:%M") + "\n\n" + "\n".join(f"{k}: {v}" for k,v in s.items())
@@ -701,6 +714,7 @@ class Jarvis:
 
 class Supervisor:
     def __init__(self, db: DB, cfg: dict):
+        """Initialize the Supervisor instance."""
         self.db, self.cfg = db, cfg
         self._stop_event = threading.Event()
         self.router = ModelRouter(cfg, event=db.event, stop_requested=self._stop_event.is_set)
@@ -715,6 +729,7 @@ class Supervisor:
         self._thread = None
 
     def start(self) -> None:
+        """Start the operation."""
         if self._thread is not None and self._thread.is_alive():
             raise RuntimeError('The NEXEN supervisor is already running')
         self._stop_event.clear()
@@ -723,6 +738,7 @@ class Supervisor:
         self._thread.start()
 
     async def shutdown(self) -> None:
+        """Shut down the operation."""
         self._stop_event.set()
         if self._thread is not None:
             await asyncio.to_thread(self._thread.join, ModelRouter.SHUTDOWN_BUDGET_SECONDS)
@@ -749,6 +765,7 @@ class Supervisor:
         return self.last_jarvis_day != now.date().isoformat() and (now.hour,now.minute) >= (hh,mm)
 
     def drain(self, limit):
+        """Perform the drain operation."""
         jobs = self.db.rows("SELECT * FROM jobs WHERE status='queued' AND available_at<=? ORDER BY id LIMIT ?", (utcnow(),limit))
         for job in jobs:
             if self._stop_event.is_set() or (BASE/'data/PAUSE_AUTONOMY').exists():
@@ -776,6 +793,7 @@ class Supervisor:
                     c.execute("UPDATE jobs SET status=?,available_at=?,last_error=?,updated_at=? WHERE id=?", (status,available,f"{type(e).__name__}: {e}"[:2000],utcnow(),jid))
 
     def tick(self):
+        """Perform the tick operation."""
         from daily_plan import ensure_day
         if self._stop_event.is_set():return
         ensure_day(self.db)
@@ -812,6 +830,7 @@ class Supervisor:
             self.jarvis.build(); self.last_jarvis_day = now.date().isoformat()
 
     def run(self):
+        """Run the operation."""
         self.db.event("supervisor_start", "NEXEN supervisor started")
         while not self._stop_event.is_set():
             try:

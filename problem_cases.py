@@ -369,6 +369,7 @@ class Cases:
 
 
 def register(app, db, photos):
+    """Register the runtime routes and lifecycle hooks."""
     from app_lifecycle import register_lifecycle
     cases = Cases(db, photos)
 

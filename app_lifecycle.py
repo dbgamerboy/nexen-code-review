@@ -30,12 +30,14 @@ class LifecycleHooks:
 
 class LifecycleRegistry:
     def __init__(self) -> None:
+        """Initialize the LifecycleRegistry instance."""
         self.hooks: list[LifecycleHooks] = []
         self.active = False
 
     def capture_legacy(self, app: FastAPI) -> None:
         # FastAPI's compatibility lists pair independent resource handlers by
         # registration order. NEXEN retains exactly one such pair: task_scene.
+        """Perform the capture legacy operation."""
         starts = app.router.on_startup
         stops = app.router.on_shutdown
         self.hooks.extend(LifecycleHooks(start, stop) for start, stop in zip_longest(starts, stops))
@@ -44,6 +46,7 @@ class LifecycleRegistry:
 
 
 def registry_for(app: FastAPI) -> LifecycleRegistry:
+    """Perform the registry for operation."""
     registry = getattr(app.state, 'nexen_lifecycle', None)
     if registry is None:
         registry = LifecycleRegistry()
@@ -53,6 +56,7 @@ def registry_for(app: FastAPI) -> LifecycleRegistry:
 
 def register_lifecycle(app: FastAPI, *, startup: LifecycleCallback | None = None,
                        shutdown: LifecycleCallback | None = None) -> None:
+    """Perform the register lifecycle operation."""
     if startup is None and shutdown is None:
         raise ValueError('At least one lifecycle callback is required')
     if any(hook is not None and not callable(hook) for hook in (startup, shutdown)):
@@ -72,6 +76,7 @@ def register_lifecycle(app: FastAPI, *, startup: LifecycleCallback | None = None
 
 
 async def _invoke(callback: LifecycleCallback | None) -> None:
+    """Perform the invoke operation."""
     if callback is not None:
         result = callback()
         if inspect.isawaitable(result):
@@ -80,6 +85,7 @@ async def _invoke(callback: LifecycleCallback | None) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Perform the lifespan operation."""
     registry = registry_for(app)
     if registry.active:
         raise RuntimeError('NEXEN application lifespan is already active')

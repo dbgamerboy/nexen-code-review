@@ -12,6 +12,7 @@ ROOT.mkdir(parents=True, exist_ok=True)
 
 class ContextPolicyTests(unittest.TestCase):
     def setUp(self):
+        """Prepare shared test fixtures."""
         temporary = tempfile.TemporaryDirectory(prefix='case-', dir=ROOT)
         self.root = Path(temporary.name).resolve()
         self.assertTrue(self.root.is_relative_to(ROOT.resolve()))
@@ -24,10 +25,12 @@ class ContextPolicyTests(unittest.TestCase):
         self.save([self.old])
 
     def save(self, sources):
+        """Save the operation."""
         self.path.write_text(json.dumps({'schema_version':1, 'excluded_sources':[
             {'source_id':item['source_id'], 'prefix_sha256':digest(item['text'])} for item in sources]}), encoding='utf-8')
 
     def packet(self):
+        """Perform the packet operation."""
         memory = SharedMemory(self.root/'absent.db', self.root/'vault', context_policy=self.path)
         with patch.object(memory, '_search_exports', return_value=[self.old]), \
                 patch.object(memory, '_search_knowledge', return_value=[self.current]), \
@@ -36,6 +39,7 @@ class ContextPolicyTests(unittest.TestCase):
             return memory.build_context('Windows Kilo code review', max_chars=16000, pool='engineering')
 
     def test_exact_exclusion_retains_unrelated_evidence_and_citations(self):
+        """Verify exact exclusion retains unrelated evidence and citations."""
         packet = self.packet()
         self.assertNotIn('obsolete desktop arrangement', packet['text'])
         self.assertIn('installed local coding tools', packet['text'])
@@ -46,6 +50,7 @@ class ContextPolicyTests(unittest.TestCase):
         self.assertEqual(self.old['text'], 'Windows Kilo code review: obsolete desktop arrangement.')
 
     def test_changed_source_content_is_not_silently_tombstoned(self):
+        """Verify changed source content is not silently tombstoned."""
         changed = {**self.old, 'text':'Windows Kilo: newly verified current source.'}
         retained, policy = _apply_context_policy([changed], self.path)
         self.assertEqual(retained, [changed])
@@ -53,6 +58,7 @@ class ContextPolicyTests(unittest.TestCase):
         self.assertEqual(policy['matched_candidates_omitted'], 0)
 
     def test_invalid_policy_pauses_excerpts_and_reports_gap(self):
+        """Verify invalid policy pauses excerpts and reports gap."""
         self.path.write_text('[1]', encoding='utf-8')
         packet = self.packet()
         self.assertEqual(packet['citations'], [])
@@ -62,6 +68,7 @@ class ContextPolicyTests(unittest.TestCase):
         self.assertNotIn('obsolete desktop arrangement', packet['text'])
 
     def test_policy_cache_refreshes_when_manifest_changes(self):
+        """Verify policy cache refreshes when manifest changes."""
         self.assertEqual(_apply_context_policy([self.old], self.path)[0], [])
         self.save([])
         retained, policy = _apply_context_policy([self.old], self.path)
@@ -69,6 +76,7 @@ class ContextPolicyTests(unittest.TestCase):
         self.assertEqual(policy['configured_sources'], 0)
 
     def test_missing_policy_keeps_fixture_evidence(self):
+        """Verify missing policy keeps fixture evidence."""
         retained, policy = _apply_context_policy([self.current], self.root/'missing.json')
         self.assertEqual(retained, [self.current])
         self.assertEqual(policy['status'], 'not_configured')

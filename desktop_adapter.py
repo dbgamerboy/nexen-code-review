@@ -225,6 +225,7 @@ class Adapter:
             return dict(armed=False, stopped=True)
 
     def act(self, action, body):
+        """Perform the act operation."""
         with self.lock:
             if action not in ('move', 'click'):
                 raise HTTPException(404, 'Unknown mouse action')

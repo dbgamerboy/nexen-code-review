@@ -27,13 +27,22 @@ TASK_STATES={'planned','in_progress','blocked','done'}
 MAX_BYTES=262144
 
 
-def encoded(value):return json.dumps(value,ensure_ascii=False,sort_keys=True,indent=2).encode('utf-8')
-def sha(raw):return hashlib.sha256(raw).hexdigest()
-def clean(value,limit=800):return redact(value)[:limit] if isinstance(value,str) else ''
-def utc(value):return datetime.fromtimestamp(value,timezone.utc).isoformat()
+def encoded(value):
+    """Encode a value as stable UTF-8 JSON."""
+    return json.dumps(value,ensure_ascii=False,sort_keys=True,indent=2).encode('utf-8')
+def sha(raw):
+    """Compute the SHA-256 digest of the supplied bytes."""
+    return hashlib.sha256(raw).hexdigest()
+def clean(value,limit=800):
+    """Redact and truncate a value for safe display."""
+    return redact(value)[:limit] if isinstance(value,str) else ''
+def utc(value):
+    """Convert a timestamp to an ISO-formatted UTC value."""
+    return datetime.fromtimestamp(value,timezone.utc).isoformat()
 
 
 def no_links(path):
+    """Perform the no links operation."""
     for item in (path,*path.parents):
         try:info=item.lstat()
         except FileNotFoundError:continue
@@ -42,6 +51,7 @@ def no_links(path):
 
 
 def read_source(path,limit=65536):
+    """Read source."""
     path=Path(path)
     source={'path':str(path),'classification':'saved_local_source','sha256':None,'available':False}
     try:
@@ -56,6 +66,7 @@ def read_source(path,limit=65536):
 class HandoffRuntime:
     def __init__(self,db,*,root=ROOT,state=STATE,profile=PROFILE,base=BASE,clock=time.time,
                  interval=30,retention=48):
+        """Initialize the HandoffRuntime instance."""
         self.db,self.root,self.state,self.profile,self.base=db,Path(root).absolute(),Path(state),Path(profile),Path(base)
         self.clock,self.interval,self.retention=clock,max(.05,interval),max(1,min(48,retention))
         no_links(self.root);self.root.mkdir(parents=True,exist_ok=True)
@@ -64,12 +75,14 @@ class HandoffRuntime:
         self.last_attempt=None;self.last_error=None;self.health='not_started'
 
     def checked(self,name):
+        """Perform the checked operation."""
         if Path(name).name!=name:raise ValueError('Invalid checkpoint filename')
         path=self.root/name;no_links(path)
         if path.resolve().parent!=self.root.resolve():raise ValueError('Checkpoint path escaped its root')
         return path
 
     def atomic(self,name,raw):
+        """Perform the atomic operation."""
         if len(raw)>MAX_BYTES:raise ValueError('Checkpoint exceeds its bounded size')
         target=self.checked(name);temporary=self.checked('.'+name+'.'+uuid.uuid4().hex+'.tmp')
         try:
@@ -82,6 +95,7 @@ class HandoffRuntime:
                 self.checked(temporary.name).unlink()
 
     def json_source(self,name,sources):
+        """Perform the json source operation."""
         raw,source=read_source(self.state/name);sources.append(source)
         try:
             data=json.loads(raw.decode('utf-8-sig')) if raw else {}
@@ -89,6 +103,7 @@ class HandoffRuntime:
         except (ValueError,UnicodeError):return {}
 
     def collect(self):
+        """Collect the operation."""
         sources=[];warnings=[]
         try:
             # Reads only existing typed task columns; never creates tasks or marks done.
@@ -156,6 +171,7 @@ class HandoffRuntime:
                 'model_calls':0,'cloud_submissions':0,'task_mutations':0,'links':{'tasks':'/tasks','agents':'/agents','continuity':'/continuity','review':'/code-review'}}
 
     def latest(self):
+        """Perform the latest operation."""
         try:
             path=self.checked('LATEST.json');raw,_=read_source(path,8192)
             value=json.loads(raw) if raw else {}
@@ -167,6 +183,7 @@ class HandoffRuntime:
         except (OSError,ValueError,TypeError,AttributeError):return None
 
     def markdown(self,data):
+        """Perform the markdown operation."""
         lines=['<!-- '+WRITER+' snapshot:'+data['snapshot']+' -->','# NEXEN continuity handoff',
                '',data['created_at']+' | Windows | Private local snapshot','',data['replacement_agent_instructions'],
                '', '## Current recorded tasks','',data['task_scope']]
@@ -180,6 +197,7 @@ class HandoffRuntime:
         return ('\n'.join(lines)+'\n').encode('utf-8')
 
     def retain(self):
+        """Perform the retain operation."""
         owned=[]
         for path in self.root.iterdir():
             if path.suffix!='.json' or not OWNED.fullmatch(path.stem):continue
@@ -198,6 +216,7 @@ class HandoffRuntime:
             self.checked(name+'.json').unlink()
 
     def checkpoint(self,*,startup=False):
+        """Perform the checkpoint operation."""
         with self.lock:
             if not self.lease:return {'written':False,'reason':'not_owner'}
             now=self.clock()
@@ -222,6 +241,7 @@ class HandoffRuntime:
                 return {'written':False,'reason':'write_failed','latest':self.latest()}
 
     async def start(self):
+        """Start the operation."""
         if self.worker and not self.worker.done():return False
         lease=SingleWriter(self.runtime)
         try:lease.__enter__()
@@ -235,6 +255,7 @@ class HandoffRuntime:
         self.worker=asyncio.create_task(self.run_loop());return True
 
     async def run_loop(self):
+        """Run loop."""
         while not self.stopping:
             self.wake.clear()
             try:await asyncio.wait_for(self.wake.wait(),timeout=self.interval)
@@ -243,6 +264,7 @@ class HandoffRuntime:
                 await asyncio.to_thread(self.checkpoint)
 
     async def shutdown(self):
+        """Shut down the operation."""
         self.stopping=True;self.wake.set()
         if self.worker:await self.worker
         with self.lock:
@@ -250,6 +272,7 @@ class HandoffRuntime:
         self.health='stopped'
 
     def status(self):
+        """Return the current runtime status."""
         latest=self.latest()
         return {'worker_running':bool(self.lease and self.worker and not self.worker.done()),'health':self.health,
                 'last_error':self.last_error,'latest':latest,'last_attempt_at':utc(self.last_attempt) if self.last_attempt is not None else None,
@@ -261,14 +284,18 @@ class HandoffRuntime:
 
 
 def register(app,db):
+    """Register the runtime routes and lifecycle hooks."""
     from pc_control import validate_request
     from app_lifecycle import register_lifecycle
     runtime=HandoffRuntime(db)
     register_lifecycle(app,startup=runtime.start,shutdown=runtime.shutdown)
     @app.get('/api/handoff/status')
-    def status(request:Request):validate_request(request);return runtime.status()
+    def status(request:Request):
+        """Return the current runtime status."""
+        validate_request(request);return runtime.status()
     @app.post('/api/handoff/checkpoint')
     async def checkpoint(request:Request):
+        """Perform the checkpoint operation."""
         validate_request(request,mutation=True)
         result=await asyncio.to_thread(runtime.checkpoint)
         if result.get('reason') in {'not_owner','write_failed'}:raise HTTPException(503,'The local handoff writer is unavailable; check its status.')

@@ -31,6 +31,7 @@ def worker_runtime():
 class ProviderRequestError(RuntimeError):
     """Safe child failure metadata without prompts, URLs or credentials."""
     def __init__(self, error_class, status_code=None):
+        """Initialize the ProviderRequestError instance."""
         self.provider_error_class = error_class if re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,79}', str(error_class)) else 'ProviderFailure'
         self.status_code = status_code if type(status_code) is int and 100 <= status_code <= 599 else None
         super().__init__('Background provider request did not complete.')
@@ -65,6 +66,7 @@ def run_request(payload, stop_requested, *, root=ROOT, max_seconds=MAX_SECONDS,
                                 cwd=str(Path(__file__).resolve().parent), env=environment,
                                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
                 def feed():
+                    """Perform the feed operation."""
                     try:
                         process.stdin.write(raw)
                         process.stdin.close()
@@ -141,6 +143,7 @@ def provider_text(data):
 
 
 def main():
+    """Perform the main operation."""
     if sys.argv[1:] != ['--worker']:
         raise SystemExit('This is a fixed internal provider worker.')
     try:

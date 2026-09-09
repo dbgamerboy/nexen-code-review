@@ -108,6 +108,7 @@ def storage_status(item: DesktopApp) -> dict:
 
 
 def app_status(item: DesktopApp) -> dict:
+    """Perform the app status operation."""
     installed = bool(item.executable and item.executable.is_file())
     storage = storage_status(item)
     available = installed and storage['configured_paths_verified']
@@ -127,6 +128,7 @@ class Launcher:
         self.last_any: float | None = None
 
     def launch(self, app_id: str) -> dict:
+        """Perform the launch operation."""
         item = APP_BY_ID.get(app_id)
         if item is None:
             raise HTTPException(404, "Unknown desktop application.")
@@ -187,10 +189,12 @@ class Launcher:
 
 
 def register(app, db):
+    """Register the runtime routes and lifecycle hooks."""
     launcher = Launcher(db)
 
     @app.get("/api/pc/apps")
     def list_apps(request: Request):
+        """List apps."""
         validate_request(request)
         return {"apps": [app_status(item) for item in APPS],
                 "mode": "deliberate_desktop_launch",

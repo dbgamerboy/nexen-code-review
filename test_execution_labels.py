@@ -16,18 +16,22 @@ import v1_readiness
 
 class DB:
     def __init__(self, path):
+        """Initialize the DB instance."""
         self.path=path
         self.memory_vault=path.parent/'vault'
     @contextmanager
     def connect(self):
+        """Perform the connect operation."""
         c=sqlite3.connect(self.path)
         c.row_factory=sqlite3.Row
         try:
             with c:yield c
         finally:c.close()
     def rows(self,sql,args=()):
+        """Perform the rows operation."""
         with self.connect() as c:return [dict(row) for row in c.execute(sql,args)]
     def scalar(self,sql,args=()):
+        """Perform the scalar operation."""
         with self.connect() as c:
             row=c.execute(sql,args).fetchone()
             return row[0] if row else None
@@ -35,6 +39,7 @@ class DB:
 
 class ExecutionLabelTests(unittest.TestCase):
     def setUp(self):
+        """Prepare shared test fixtures."""
         self.temp=tempfile.TemporaryDirectory()
         self.root=Path(self.temp.name)
         self.db=DB(self.root/'test.sqlite3')
@@ -42,11 +47,18 @@ class ExecutionLabelTests(unittest.TestCase):
         self.readiness=Readiness(self.db,requirements=self.requirements,state=self.root,
             probe=lambda:{'nexen':True,'n8n':True,'ollama':True,'pc2':False},
             adapter_probe=lambda connections:{'ollama':True,'kilo':True})
-    def tearDown(self):self.temp.cleanup()
-    def item(self,name):return next(row for row in self.readiness.packet()['items'] if row['id']==name)
-    def receipt(self,name,**data):(self.root/RECEIPTS[name]).write_text(json.dumps(data),encoding='utf-8')
+    def tearDown(self):
+        """Clean up shared test fixtures."""
+        self.temp.cleanup()
+    def item(self,name):
+        """Perform the item operation."""
+        return next(row for row in self.readiness.packet()['items'] if row['id']==name)
+    def receipt(self,name,**data):
+        """Perform the receipt operation."""
+        (self.root/RECEIPTS[name]).write_text(json.dumps(data),encoding='utf-8')
 
     def test_login_physical_and_failure_are_distinct_and_flags_unchanged(self):
+        """Verify login physical and failure are distinct and flags unchanged."""
         items={item['id']:item for item in self.requirements.status()['pending']}
         for name in ('amboras','ads','supercool','n8n','pc2','browser-home'):
             self.assertEqual(items[name]['execution_class'],'HUMAN')
@@ -56,6 +68,7 @@ class ExecutionLabelTests(unittest.TestCase):
         self.assertEqual(requirement_class({'state':[]})['execution_class'],'BLOCKED')
 
     def test_only_named_available_verified_adapter_is_automatable(self):
+        """Verify only named available verified adapter is automatable."""
         row={'id':'ollama','verified':False,'endpoint_reachable':True}
         self.assertEqual(readiness_class(row,available_adapters={'ollama':True})['execution_class'],'BLOCKED')
         row['verified']=True
@@ -67,6 +80,7 @@ class ExecutionLabelTests(unittest.TestCase):
             self.assertNotEqual(result['execution_class'],'AUTOMATABLE')
 
     def test_readiness_joins_scoped_receipt_and_current_adapter(self):
+        """Verify readiness joins scoped receipt and current adapter."""
         self.assertEqual(self.item('ollama')['execution_class'],'BLOCKED')
         self.receipt('ollama',text_test={'passed':True},manifest_dependencies_verified=True)
         self.assertEqual(self.item('ollama')['execution_class'],'AUTOMATABLE')
@@ -78,6 +92,7 @@ class ExecutionLabelTests(unittest.TestCase):
         self.assertTrue(all(not row['execution_unlocked'] for row in self.readiness.packet()['items']))
 
     def test_local_health_workflow_proof_is_retained_without_verifying_business_execution(self):
+        """Verify local health workflow proof is retained without verifying business execution."""
         self.receipt('n8n',workflow_id='nexenLocalHealthV1',health_workflow_verified=True,
                      workflow_imported=True,workflow_published=True,run_verified=True,local_only=True,
                      schedule_loaded=True,scheduled_run_verified=False,auth_verified=False)
@@ -91,6 +106,7 @@ class ExecutionLabelTests(unittest.TestCase):
         self.assertEqual(item['execution_class'],'HUMAN')
 
     def test_homepage_task_is_persistent_human_and_does_not_modify_browser(self):
+        """Verify homepage task is persistent human and does not modify browser."""
         ident=self.readiness.tasks['browser-home']
         before=self.db.scalar('SELECT count(*) FROM hub_requests')
         other=Readiness(self.db,state=self.root,probe=lambda:{},adapter_probe=lambda connections:{})
@@ -102,11 +118,13 @@ class ExecutionLabelTests(unittest.TestCase):
         self.assertEqual(item['url'],'http://127.0.0.1:8788/')
 
     def test_failed_live_availability_probe_fails_closed(self):
+        """Verify failed live availability probe fails closed."""
         self.receipt('ollama',text_test={'passed':True},manifest_dependencies_verified=True)
         with patch.object(self.readiness,'adapter_probe',side_effect=OSError('fixture unavailable')):
             self.assertEqual(self.item('ollama')['execution_class'],'BLOCKED')
 
     def test_current_model_inventory_is_required_without_model_execution(self):
+        """Verify current model inventory is required without model execution."""
         class Response:
             def __init__(self,payload):self.payload=payload
             def __enter__(self):return self

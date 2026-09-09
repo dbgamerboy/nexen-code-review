@@ -79,6 +79,7 @@ class Requirements:
               provider TEXT PRIMARY KEY,requested_at TEXT NOT NULL,status TEXT NOT NULL)''')
 
     def status(self):
+        """Return the current runtime status."""
         with self.lock:
             if self.cached is None or time.monotonic()-self.cached_at >= 30:
                 self.cached, self.cached_at = self.probe(), time.monotonic()
@@ -119,6 +120,7 @@ class Requirements:
 
 
 def register(app, db):
+    """Register the runtime routes and lifecycle hooks."""
     requirements = Requirements(db)
 
     @app.get('/connections', response_class=HTMLResponse)
@@ -137,6 +139,7 @@ def register(app, db):
 
     @app.post('/api/action-required/{name}/run')
     def run(name: str, request: Request):
+        """Run the operation."""
         from pc_control import validate_request
         validate_request(request, mutation=True)
         return requirements.require_connection(name)

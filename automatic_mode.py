@@ -115,6 +115,7 @@ class AutomaticMode:
                 self.busy = False
 
     def status(self, requirements=None):
+        """Return the current runtime status."""
         s = self.settings()
         observed = requirements.status() if requirements is not None else {'pending': []}
         chosen = GOALS.get(s['goal'], ())

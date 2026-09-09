@@ -50,6 +50,7 @@ def write_memory_note(note, text):
 
 
 def register(app, db, photos):
+    """Register the runtime routes and lifecycle hooks."""
     from app_lifecycle import register_lifecycle
     busy = asyncio.Lock()
     with db.connect() as c:
@@ -66,6 +67,7 @@ def register(app, db, photos):
     def recover_interrupted_analyses() -> None:
         # Importing app code for a CLI/test must not interrupt the live server's
         # analysis. Recovery belongs to actual application startup only.
+        """Perform the recover interrupted analyses operation."""
         with db.connect() as c:
             c.execute("UPDATE life_analyses SET status='interrupted' WHERE status='running'")
 

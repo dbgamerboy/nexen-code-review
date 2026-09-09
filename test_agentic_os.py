@@ -13,14 +13,17 @@ TEST_ROOT.mkdir(parents=True, exist_ok=True)
 
 class AgenticOSTests(unittest.TestCase):
     def setUp(self):
+        """Prepare shared test fixtures."""
         self.temp = tempfile.TemporaryDirectory(prefix='case-', dir=TEST_ROOT)
         self.root = Path(self.temp.name).resolve()
         self.assertTrue(self.root.is_relative_to(TEST_ROOT.resolve()))
 
     def tearDown(self):
+        """Clean up shared test fixtures."""
         self.temp.cleanup()
 
     def test_bootstrap_preserves_existing_user_context(self):
+        """Verify bootstrap preserves existing user context."""
         first = bootstrap(self.root)
         profile = self.root/'context/user.md'
         profile.write_text('My edited preferences', encoding='utf-8')
@@ -31,6 +34,7 @@ class AgenticOSTests(unittest.TestCase):
         self.assertFalse(second['task_database_replaced'])
 
     def test_project_context_does_not_load_other_brand(self):
+        """Verify project context does not load other brand."""
         bootstrap(self.root)
         packet = context('wdr', root=self.root)
         paths = [d['path'] for d in packet['documents']]
@@ -40,6 +44,7 @@ class AgenticOSTests(unittest.TestCase):
         self.assertTrue(all(len(d['sha256']) == 64 for d in packet['documents']))
 
     def test_task_context_uses_supported_shared_memory_contract(self):
+        """Verify task context uses supported shared memory contract."""
         bootstrap(self.root)
         def retrieve(query, task_type, pool):
             if task_type not in ('code', 'workflow', 'automation'):
@@ -51,6 +56,7 @@ class AgenticOSTests(unittest.TestCase):
         self.assertEqual(packet['knowledge']['text'], 'Relevant fixture evidence')
 
     def test_query_context_propagates_evidence_for_every_project_pool(self):
+        """Verify query context propagates evidence for every project pool."""
         bootstrap(self.root)
         expected={'nexen':'engineering','wdr':'game','lumipaw':'commerce','music':'music','life':'life'}
         for project,pool in expected.items():
@@ -64,11 +70,13 @@ class AgenticOSTests(unittest.TestCase):
                 self.assertEqual(packet['knowledge']['status'],'ready')
 
     def test_traversal_and_unknown_projects_rejected(self):
+        """Verify traversal and unknown projects rejected."""
         with self.assertRaises(ValueError): safe_path(self.root, '../escape')
         with self.assertRaises(ValueError): context('../private', root=self.root)
         with self.assertRaises(ValueError): plan('nope', 'task', root=self.root)
 
     def test_plan_treats_command_like_text_as_data(self):
+        """Verify plan treats command like text as data."""
         bootstrap(self.root)
         task = 'echo $(Remove-Item F:\\*) ; arbitrary text'
         result = plan('nexen', task, 'phases', self.root)
@@ -78,6 +86,7 @@ class AgenticOSTests(unittest.TestCase):
         self.assertTrue(all(x['status'] == 'pending' for x in saved['phases']))
 
     def test_files_do_not_claim_running_hooks_or_remote_access(self):
+        """Verify files do not claim running hooks or remote access."""
         bootstrap(self.root)
         report = doctor(self.root, live=False)
         checks = {x['name']:x for x in report['checks']}
@@ -88,6 +97,7 @@ class AgenticOSTests(unittest.TestCase):
         self.assertIsNone(report['completion_percentage'])
 
     def test_wrong_receipt_type_does_not_break_readiness(self):
+        """Verify wrong receipt type does not break readiness."""
         bootstrap(self.root)
         receipt = self.root / 'bad-receipt.json'
         receipt.write_text('[1]', encoding='utf-8')

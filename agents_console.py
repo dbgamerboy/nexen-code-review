@@ -46,20 +46,24 @@ CURRENT_CORRECTION = ('Current platform: Windows. Use Windows-compatible adapter
 
 
 def now():
+    """Return the current UTC timestamp."""
     return datetime.now(timezone.utc).isoformat()
 
 
 def digest(value):
+    """Perform the digest operation."""
     return hashlib.sha256(value if isinstance(value, bytes) else value.encode('utf-8')).hexdigest()
 
 
 def target_url(target, task_id):
+    """Perform the target url operation."""
     if target == 'kilo' and type(task_id) is int and task_id > 0:
         return '/kilo?task_id=' + str(task_id)
     return TARGETS[target]['url']
 
 
 def team_plan(task_id):
+    """Perform the team plan operation."""
     roles = [('planner','Read the current task, selected profile and relevant memory.','Cited scope, constraints and acceptance checks.','/memory-pools'),
              ('researcher','Check relevant original sources and current documentation where needed.','Source references, coverage gaps and factual findings.','/readiness'),
              ('coder','Prepare a patch or implementation using a reviewed local route.','Proposed changes and actual validation results.','/kilo?task_id=' + str(task_id)),
@@ -82,18 +86,21 @@ class HandoffBody(BaseModel):
     @field_validator('prompt')
     @classmethod
     def not_blank(cls, value):
+        """Perform the not blank operation."""
         if not value.strip():
             raise ValueError('Enter one concrete task or prompt.')
         return value.strip()
 
 
 def default_context(query, task_type, pool):
+    """Perform the default context operation."""
     from memory_runtime import context_for
     return context_for(query, task_type, pool)
 
 
 def profile_context(project, root=PROFILE):
     # Same selected files as agentic_os.context, bounded before reading.
+    """Perform the profile context operation."""
     names = ['context/user.md', 'SOUL.md', 'shared/methodology.md',
              'shared/brand-context/' + project + '.md', 'projects/' + project + '/memory/learnings.md']
     documents, warnings, remaining = [], [], 4000
@@ -118,6 +125,7 @@ def profile_context(project, root=PROFILE):
 
 
 def provider_readiness():
+    """Perform the provider readiness operation."""
     from harness_bridge import HarnessBridge
     from memory_runtime import shared_memory
     # Metadata only: no CLI authentication probes or inference requests.
@@ -152,6 +160,7 @@ def provider_readiness():
 class AgentsConsole:
     def __init__(self, db, *, root=PACKETS, context_loader=default_context, profile_loader=profile_context,
                  readiness_loader=provider_readiness):
+        """Initialize the AgentsConsole instance."""
         self.db, self.root = db, Path(root).absolute()
         self.context_loader, self.profile_loader, self.readiness_loader = context_loader, profile_loader, readiness_loader
         self.tracker = Tracker(db)
@@ -163,6 +172,7 @@ class AgentsConsole:
               task_id INTEGER,created_at TEXT NOT NULL,packet_json TEXT NOT NULL)''')
 
     def status(self):
+        """Return the current runtime status."""
         value = self.readiness_loader()
         # Provider URLs are code-owned; receipt or plugin metadata cannot change them.
         by_id = {item.get('id'):item for item in value.get('providers', []) if isinstance(item, dict)}
@@ -181,6 +191,7 @@ class AgentsConsole:
                 'notice':'This desk prepares shared context and opens existing tools. It does not exhaust subscriptions, switch providers automatically, spend credits or mark work complete.'}
 
     def _task(self, ident):
+        """Perform the task operation."""
         if ident is None:
             return None
         with self.db.connect() as c:
@@ -191,6 +202,7 @@ class AgentsConsole:
         return {'id':row['id'], 'text':redact(row['text'])[:1000], 'status':str(row['status'])[:40]}
 
     def prepare(self, body):
+        """Prepare the requested operation."""
         body = HandoffBody.model_validate(body)
         task_id = body.task_id
         if task_id is None:
@@ -260,6 +272,7 @@ class AgentsConsole:
         return self.get(ident)
 
     def get(self, ident):
+        """Handle a GET request."""
         if not ID.fullmatch(ident):
             raise HTTPException(404, 'Handoff not found.')
         with self.db.connect() as c:
@@ -276,6 +289,7 @@ class AgentsConsole:
         return packet
 
     def listing(self):
+        """Perform the listing operation."""
         with self.db.connect() as c:
             c.row_factory = sqlite3.Row
             rows = c.execute('SELECT id,target,project,task_type,task_id,created_at FROM agent_handoffs ORDER BY created_at DESC LIMIT 30').fetchall()
@@ -283,31 +297,37 @@ class AgentsConsole:
 
 
 def register(app, db):
+    """Register the runtime routes and lifecycle hooks."""
     from pc_control import validate_request
     service = AgentsConsole(db)
 
     @app.get('/agents', response_class=HTMLResponse)
     def page(request: Request):
+        """Serve the requested application page."""
         validate_request(request)
         return (BASE / 'agents-console.html').read_text(encoding='utf-8')
 
     @app.get('/api/agents/status')
     def status(request: Request):
+        """Return the current runtime status."""
         validate_request(request)
         return service.status()
 
     @app.get('/api/agents/handoffs')
     def listing(request: Request):
+        """Perform the listing operation."""
         validate_request(request)
         return service.listing()
 
     @app.post('/api/agents/handoffs')
     def prepare(body: HandoffBody, request: Request):
+        """Prepare the requested operation."""
         validate_request(request, mutation=True)
         return service.prepare(body)
 
     @app.get('/api/agents/handoffs/{ident}')
     def get(ident: str, request: Request):
+        """Handle a GET request."""
         validate_request(request)
         return service.get(ident)
 

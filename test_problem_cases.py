@@ -22,6 +22,7 @@ ROOT.mkdir(parents=True, exist_ok=True)
 
 
 def png(color):
+    """Perform the png operation."""
     def chunk(kind, data):
         return struct.pack('>I', len(data))+kind+data+struct.pack('>I', zlib.crc32(kind+data))
     return (b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR', struct.pack('>IIBBBBB', 1, 1, 8, 2, 0, 0, 0))
@@ -30,6 +31,7 @@ def png(color):
 
 class Model:
     def __init__(self):
+        """Initialize the Model instance."""
         self.calls = []
         self.image_calls = 0
         self.active = 0
@@ -41,10 +43,12 @@ class Model:
         self.check_failure = False
 
     async def check(self, model):
+        """Check the operation."""
         if self.check_failure:
             raise ValueError('Fixture model unavailable')
 
     async def ask(self, model, system, prompt, image=None):
+        """Perform the ask operation."""
         self.active += 1
         self.maximum_active = max(self.maximum_active, self.active)
         self.calls.append({'system': system, 'prompt': prompt, 'image': image is not None})
@@ -67,6 +71,7 @@ class Model:
 
 class CaseTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        """Perform the asyncSetUp operation."""
         asyncio.get_running_loop().set_debug(False)
         self.temporary = tempfile.TemporaryDirectory(prefix='case-', dir=ROOT)
         self.root = Path(self.temporary.name).resolve()
@@ -83,16 +88,19 @@ class CaseTests(unittest.IsolatedAsyncioTestCase):
         self.cases = module.Cases(self.db, self.photos, model=self.model, context=context)
 
     async def asyncTearDown(self):
+        """Perform the asyncTearDown operation."""
         await self.cases.shutdown()
         await asyncio.sleep(0)
         self.assertFalse(module.WORKER_LOCK.locked())
 
     def body(self, count=2, **kwargs):
+        """Perform the body operation."""
         ids = [self.photos.put(png(i+1), 'image/png')['photo']['id'] for i in range(count)]
         return module.CaseInput(request_key=uuid.uuid4().hex, title='Fixture life situation', note='User goal and context.',
                                 photos=[{'photo_id': ident, 'note': 'Photo note '+str(i+1)} for i, ident in enumerate(ids)], **kwargs)
 
     async def run_case(self, ident):
+        """Run case."""
         result = await self.cases.start(ident)
         if result['started']:
             await self.cases.task
@@ -100,6 +108,7 @@ class CaseTests(unittest.IsolatedAsyncioTestCase):
         return self.cases.get(ident)
 
     async def test_one_to_twenty_ordered_photos_and_idempotent_creation(self):
+        """Verify one to twenty ordered photos and idempotent creation."""
         body = self.body(20)
         with ThreadPoolExecutor(max_workers=4) as pool:
             results = list(pool.map(lambda _: self.cases.create(body), range(4)))
@@ -119,6 +128,7 @@ class CaseTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError): module.CaseInput(**invalid)
 
     async def test_sequential_summaries_then_guide_with_context_without_completion(self):
+        """Verify sequential summaries then guide with context without completion."""
         ident = self.cases.create(self.body())['case']['id']
         result = await self.run_case(ident)
         self.assertEqual(result['status'], 'guide_ready')
@@ -141,6 +151,7 @@ class CaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.model.calls), 3)
 
     async def test_photo_failure_retry_resumes_only_unfinished_photos(self):
+        """Verify photo failure retry resumes only unfinished photos."""
         ident = self.cases.create(self.body(3))['case']['id']
         self.model.fail_image = 2
         failed = await self.run_case(ident)
@@ -154,6 +165,7 @@ class CaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.model.calls), 5)
 
     async def test_twenty_long_summaries_fit_one_bounded_combined_request(self):
+        """Verify twenty long summaries fit one bounded combined request."""
         body = self.body(20).model_copy(update={'title': 'T'*160, 'note': 'N'*3000})
         ident = self.cases.create(body)['case']['id']
         original_ask = self.model.ask
@@ -170,6 +182,7 @@ class CaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"summary_truncated": true', self.model.calls[-1]['prompt'])
 
     async def test_failed_guide_retry_does_not_repeat_image_calls(self):
+        """Verify failed guide retry does not repeat image calls."""
         ident = self.cases.create(self.body())['case']['id']
         self.model.fail_guide = True
         failed = await self.run_case(ident)
@@ -180,6 +193,7 @@ class CaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.model.calls), 4)
 
     async def test_duplicate_start_single_worker_and_explicit_stop(self):
+        """Verify duplicate start single worker and explicit stop."""
         first = self.cases.create(self.body())['case']['id']
         second = self.cases.create(self.body())['case']['id']
         self.model.block = asyncio.Event()
@@ -192,6 +206,7 @@ class CaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.cases.get(second)['status'], 'ready')
 
     async def test_immediate_stop_before_coroutine_start_releases_worker(self):
+        """Verify immediate stop before coroutine start releases worker."""
         ident = self.cases.create(self.body(1))['case']['id']
         await self.cases.start(ident); self.cases.stop(ident)
         await asyncio.gather(self.cases.task, return_exceptions=True); await asyncio.sleep(0)
@@ -201,6 +216,7 @@ class CaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.run_case(ident))['status'], 'guide_ready')
 
     async def test_restart_recovery_preserves_saved_summaries_without_autostart(self):
+        """Verify restart recovery preserves saved summaries without autostart."""
         ident = self.cases.create(self.body())['case']['id']
         with self.db.connect() as c:
             c.execute("UPDATE problem_cases SET status='running' WHERE id=?", (ident,))
@@ -215,6 +231,7 @@ class CaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.model.calls), 0)
 
     async def test_integrity_or_missing_model_stops_before_image_submission(self):
+        """Verify integrity or missing model stops before image submission."""
         body = self.body(1); ident = self.cases.create(body)['case']['id']
         path, _ = self.photos.file(body.photos[0].photo_id)
         path.write_bytes(path.read_bytes()+b'fixture modification')
@@ -226,6 +243,7 @@ class CaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.model.calls), 0)
 
     async def test_existing_completed_task_status_is_preserved(self):
+        """Verify existing completed task status is preserved."""
         task_id = self.cases.tracker.create(TaskCreate(text='Existing completed fixture'), initial_status='done')
         ident = self.cases.create(self.body(1, task_id=task_id))['case']['id']
         self.assertEqual((await self.run_case(ident))['task_status'], 'done')
@@ -233,6 +251,7 @@ class CaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.db.scalar('SELECT count(*) FROM hub_requests'), 1)
 
     async def test_routes_require_auth_and_origin_and_reject_server_paths(self):
+        """Verify routes require auth and origin and reject server paths."""
         app = FastAPI(); store = app_auth.AuthStore(self.root/'auth')
         with patch.object(app_auth, 'AuthStore', lambda: store): gate = app_auth.register(app)
         @app.middleware('http')

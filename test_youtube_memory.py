@@ -43,6 +43,7 @@ class DB:
 
 class YouTubeMemoryTests(unittest.TestCase):
     def setUp(self):
+        """Prepare shared test fixtures."""
         self.temp=tempfile.TemporaryDirectory(dir=fixture_root(),prefix='youtube-memory-')
         self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name)
@@ -55,10 +56,12 @@ class YouTubeMemoryTests(unittest.TestCase):
         item=self.worker.create({'url':URL,'title':'Fixture tutorial','transcript':text})
         return self.worker.process(item['id'])
     def output(self,prompt,model,profile=None,source_refs=None):
+        """Perform the output operation."""
         self.calls.append((prompt,model))
         return json.dumps({'title':'Context guide','summary':'A local draft','steps':[{'title':'Read context','instruction':'Review the context file.','source_refs':['s1'],'required_adapter':'shell','execution_status':'completed'}],'blockers':[]})
 
     def test_url_and_caption_ssrf_allowlists(self):
+        """Verify url and caption ssrf allowlists."""
         self.assertEqual(canonical_url('https://youtu.be/w0S-khYCaB4?t=5')[0],URL)
         self.assertEqual(canonical_url('https://m.youtube.com/shorts/w0S-khYCaB4')[0],URL)
         for authority in ('user'+'@'+'youtube.com', 'user:password'+'@'+'youtube.com', 'youtube.com:444'):
@@ -133,6 +136,7 @@ class YouTubeMemoryTests(unittest.TestCase):
         with self.assertRaises(ValueError):validate_draft({'steps':[{'instruction':'Guess','source_refs':['s999']}]},source,'guide','fixture',chosen)
 
     def test_final_guide_validation_enforces_five_steps_without_limiting_workflows(self):
+        """Verify final guide validation enforces five steps without limiting workflows."""
         source=self.ready();_,chosen=compile_prompt(source,'guide')
         def draft(size):
             return {'steps':[{'instruction':'Review the cited source.','source_refs':['s1']} for _ in range(size)]}
@@ -222,6 +226,7 @@ class YouTubeMemoryTests(unittest.TestCase):
         self.assertEqual(len(result['raw_capture_sha256']),64)
 
     def test_guide_profile_bounds_real_ollama_request(self):
+        """Verify guide profile bounds real ollama request."""
         source=self.ready('\n'.join('Context memory statement '+str(i)+' '+('evidence '*20) for i in range(250)))
         prompt,chosen=compile_prompt(source,'guide')
         self.assertLessEqual(len(prompt),7500,'Guide request must fit its compact local-model context.')
@@ -241,6 +246,7 @@ class YouTubeMemoryTests(unittest.TestCase):
         self.assertFalse(request['stream'])
 
     def test_local_model_uses_required_citation_schema(self):
+        """Verify local model uses required citation schema."""
         source=self.ready()
         prompt,chosen=compile_prompt(source,'guide')
         captured=[]
@@ -257,6 +263,7 @@ class YouTubeMemoryTests(unittest.TestCase):
         self.assertEqual(step['properties']['source_refs']['items']['enum'],[x['id'] for x in chosen])
 
     def test_malformed_model_response_is_controlled_value_error(self):
+        """Verify malformed model response is controlled value error."""
         for payload in ([], None, 'text', {'message': []}, {'message': None},
                         {'message': 'text'}, {'message': {'content': 123}},
                         {'message': {'content': ''}}, {'message': {'content': 'x' * 24001}}):
@@ -270,6 +277,7 @@ class YouTubeMemoryTests(unittest.TestCase):
                         local_draft('Fixture source', 'fixture:small', source_refs=['s1'])
 
     def test_malformed_model_catalog_is_rejected_before_chat(self):
+        """Verify malformed model catalog is rejected before chat."""
         for payload in ([], None, {'models': None}, {'models': {}}):
             calls = []
             def respond(request):

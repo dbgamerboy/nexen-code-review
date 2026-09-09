@@ -18,6 +18,7 @@ class NavigationTests(unittest.TestCase):
                         'path': path, 'query_string': b'', 'method': method, 'headers': []})
 
     def test_supported_destinations_survive_login(self):
+        """Verify supported destinations survive login."""
         for path in app_auth.SUPPORTED_DESTINATIONS:
             with self.subTest(path=path):
                 response = self.gate(self.request(path))
@@ -33,11 +34,13 @@ class NavigationTests(unittest.TestCase):
             self.assertEqual(self.gate(self.request(path, method)).status_code, 401)
 
     def test_non_ascii_service_key_is_denied_without_server_error(self):
+        """Verify non ascii service key is denied without server error."""
         request = self.request('/api/hub/digest')
         request.scope['headers'] = [(b'x-nexen-service', 'caf\u00e9'.encode('latin-1'))]
         self.assertEqual(self.gate(request).status_code, 401)
 
     def test_session_exports_the_same_navigation_contract(self):
+        """Verify session exports the same navigation contract."""
         with patch.object(app_auth, 'AuthStore') as factory:
             factory.return_value.configured.return_value = True
             factory.return_value.valid.return_value = False

@@ -38,6 +38,7 @@ def save_digest(report, path):
     path.write_text(json.dumps(report, indent=2), encoding='utf-8')
 
 def register(app,db,sup):
+    """Register the runtime routes and lifecycle hooks."""
     from app_auth import register as register_auth
     auth_gate = register_auth(app)
     @app.middleware('http')
@@ -140,6 +141,7 @@ def register(app,db,sup):
           CREATE TABLE IF NOT EXISTS hub_state(key TEXT PRIMARY KEY,value TEXT);''')
 
     def refresh_skills():
+        """Perform the refresh skills operation."""
         if (BASE/'data/MIGRATION_LIBRARY_PENDING').exists() or not (BASE/'library').is_dir():
             with db.connect() as c:
                 count=c.execute('SELECT count(*) FROM hub_skills').fetchone()[0]
@@ -163,6 +165,7 @@ def register(app,db,sup):
         return {'count':len(rows),'status':'Reference library indexed; supporting scripts are not executed.'}
 
     def digest():
+        """Perform the digest operation."""
         report={'generated_at':datetime.now(timezone.utc).isoformat(),'source':str(DISCORD),'messages':[],'status':'not_connected'}
         if DISCORD.is_file():
             try:
@@ -257,6 +260,7 @@ def register(app,db,sup):
 
     @app.get('/api/hub/document/{name}',response_class=HTMLResponse)
     def document(name:str):
+        """Perform the document operation."""
         names={'master':'NEXEN-MASTER.md','prompts':'NEXEN-PROMPTS.md','map':'NEXEN-MAP.html','lumipaw':'LUMIPAW-LAUNCH.md','handoff':'NEXEN-HANDOFF.md','rent':'RENT-ASSISTANCE.md','video':'NEXEN-VIDEO-BRIEF.md','drive-report':'F-AND-CLAUDE-REPORT.md','quality':'NEXEN-QUALITY-PLAN.md'}
         curated={'benefits':'BENEFITS-AND-STABILITY-PLAN.md','credit':'CREDIT-RECOVERY-PLAN.md',
                  'wdr-business':'WDR-BUSINESS-SETUP-PLAN.md','architecture-current':'NEXEN-ARCHITECTURE-CURRENT.md'}
@@ -322,6 +326,7 @@ def register(app,db,sup):
 
     @app.get('/guide',response_class=HTMLResponse)
     def guide():
+        """Perform the guide operation."""
         return '''<meta charset="utf-8"><style>body{font:18px/1.6 system-ui;max-width:850px;margin:50px auto;background:#10151b;color:#e4eff3}a{color:#85eed6}</style>
         <a href="/">Back to NEXEN</a><h1>Using your NEXEN</h1>
         <h2>Start your day</h2><p>Open Discord Digest first. It shows messages already captured by your existing NEXEN Discord integration. Refreshing it does not send any messages.</p>

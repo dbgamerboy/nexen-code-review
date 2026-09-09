@@ -23,6 +23,7 @@ HEADERS = {'Origin': ORIGIN, 'X-Nexen-Action': 'launch', 'Content-Type': 'video/
 
 class VideoStorageTests(unittest.TestCase):
     def setUp(self):
+        """Prepare shared test fixtures."""
         fixture_root = require_output_path('H:/NEXEN/work/next-video-test-fixtures')
         fixture_root.mkdir(parents=True, exist_ok=True)
         temporary = tempfile.TemporaryDirectory(dir=fixture_root, prefix='case-')
@@ -48,10 +49,12 @@ class VideoStorageTests(unittest.TestCase):
         self.client.cookies.set(app_auth.COOKIE, self.auth.setup('fixture-password-only-1234'))
 
     def upload(self, content=WEBM, headers=None, ident=None):
+        """Perform the upload operation."""
         return self.client.post('/api/next/' + str(ident or self.ident) + '/video',
                                 content=content, headers=headers or HEADERS)
 
     def test_saved_hash_receipt_and_authenticated_byte_exact_playback(self):
+        """Verify saved hash receipt and authenticated byte exact playback."""
         result = self.upload()
         self.assertEqual(result.status_code, 200, result.text)
         receipt = result.json()['video']
@@ -76,6 +79,7 @@ class VideoStorageTests(unittest.TestCase):
         self.assertEqual(self.flow.action(self.flow.task(self.ident))['url'], '/music-render')
 
     def test_duplicate_retry_keeps_one_file_and_original_receipt(self):
+        """Verify duplicate retry keeps one file and original receipt."""
         first, second = self.upload().json(), self.upload().json()
         self.assertFalse(first['duplicate'])
         self.assertTrue(second['duplicate'])
@@ -85,6 +89,7 @@ class VideoStorageTests(unittest.TestCase):
         self.assertFalse(list(self.output.glob('*.tmp')))
 
     def test_auth_and_same_origin_are_required_for_upload_and_playback(self):
+        """Verify auth and same origin are required for upload and playback."""
         receipt = self.upload().json()['video']
         for headers in ({'Content-Type':'video/webm'}, dict(HEADERS, Origin='https://invalid.example')):
             self.assertEqual(self.upload(headers=headers).status_code, 403)
@@ -94,6 +99,7 @@ class VideoStorageTests(unittest.TestCase):
         self.assertEqual(self.client.get(receipt['receipt_url']).status_code, 401)
 
     def test_mime_header_length_and_container_errors_never_create_a_file(self):
+        """Verify mime header length and container errors never create a file."""
         samples = [
             (WEBM, dict(HEADERS, **{'Content-Type':'text/html'}), 415),
             (WEBM, dict(HEADERS, **{'Content-Encoding':'gzip'}), 415),
@@ -111,6 +117,7 @@ class VideoStorageTests(unittest.TestCase):
         self.assertFalse(self.output.exists())
 
     def test_declared_and_streamed_size_limits_apply_before_storage(self):
+        """Verify declared and streamed size limits apply before storage."""
         self.assertEqual(module.MAX_VIDEO_BYTES, 64*1024*1024)
         headers = dict(HEADERS, **{'Content-Length':str(module.MAX_VIDEO_BYTES+1)})
         self.assertEqual(self.upload(headers=headers).status_code, 413)
@@ -120,6 +127,7 @@ class VideoStorageTests(unittest.TestCase):
         self.assertFalse(self.output.exists())
 
     def test_missing_task_invalid_id_and_offdrive_root_fail_closed(self):
+        """Verify missing task invalid id and offdrive root fail closed."""
         self.assertEqual(self.upload(ident=999).status_code, 404)
         self.assertEqual(self.client.get('/api/next/videos/not-a-file').status_code, 404)
         self.assertEqual(self.client.get('/api/next/videos/'+'a'*64).status_code, 404)
@@ -130,6 +138,7 @@ class VideoStorageTests(unittest.TestCase):
         self.assertFalse(self.output.exists())
 
     def test_failed_atomic_publish_cleans_temporary_file_and_does_not_fallback(self):
+        """Verify failed atomic publish cleans temporary file and does not fallback."""
         with patch.object(module.os, 'replace', side_effect=OSError('Fixture disk error')):
             response = self.upload()
         self.assertEqual(response.status_code, 503)
@@ -138,6 +147,7 @@ class VideoStorageTests(unittest.TestCase):
         self.assertEqual(self.flow.tracker.get(self.ident)['status'], 'planned')
 
     def test_saved_file_tampering_is_not_overwritten_on_retry(self):
+        """Verify saved file tampering is not overwritten on retry."""
         receipt = self.upload().json()['video']
         path = Path(receipt['path'])
         path.write_bytes(b'invalid')
@@ -146,6 +156,7 @@ class VideoStorageTests(unittest.TestCase):
         self.assertEqual(self.client.get(receipt['video_url']).status_code, 409)
 
     def test_page_uses_owned_save_endpoint_and_suppresses_native_download_control(self):
+        """Verify page uses owned save endpoint and suppresses native download control."""
         html = self.client.get('/next').text
         self.assertIn('Save video to NEXEN', html)
         self.assertIn('controlslist="nodownload"', html)

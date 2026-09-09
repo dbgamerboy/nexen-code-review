@@ -13,6 +13,7 @@ SHELL = Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32/WindowsPowe
 
 class ScanWrapperTests(unittest.TestCase):
     def setUp(self):
+        """Prepare shared test fixtures."""
         parent = Path('H:/NEXEN/work/tests')
         parent.mkdir(parents=True, exist_ok=True)
         self.temp = tempfile.TemporaryDirectory(prefix='scan-wrapper-', dir=parent)
@@ -25,9 +26,11 @@ class ScanWrapperTests(unittest.TestCase):
         python.write_bytes(b'fixture only; not executable')
 
     def tearDown(self):
+        """Clean up shared test fixtures."""
         self.temp.cleanup()
 
     def run_fixture(self, extra='', requested='$PSScriptRoot'):
+        """Run fixture."""
         driver = self.root / 'fixture.ps1'
         driver.write_text(r'''
 $ErrorActionPreference = 'Stop'
@@ -64,27 +67,32 @@ try {
         return json.loads(result.stdout)
 
     def test_fixed_stages_use_guarded_environment_and_preserve_location(self):
+        """Verify fixed stages use guarded environment and preserve location."""
         result = self.run_fixture()
         self.assertEqual(result, {'status': 'ok', 'steps': ['scan', 'tools', 'compile', 'jarvis'], 'location_preserved': True})
 
     def test_failure_does_not_run_later_stages(self):
+        """Verify failure does not run later stages."""
         result = self.run_fixture("$env:NEXEN_FIXTURE_FAIL_STAGE = 'tools'")
         self.assertEqual(result['status'], 'blocked')
         self.assertEqual(result['steps'], ['scan', 'tools'])
         self.assertTrue(result['location_preserved'])
 
     def test_c_output_root_fails_before_stage_dispatch(self):
+        """Verify c output root fails before stage dispatch."""
         result = self.run_fixture(requested="'C:\\nexen-must-not-create'")
         self.assertEqual(result['status'], 'blocked')
         self.assertEqual(result['steps'], [])
 
     def test_missing_entry_fails_before_stage_dispatch(self):
+        """Verify missing entry fails before stage dispatch."""
         (self.root / 'nexen.py').unlink()
         result = self.run_fixture()
         self.assertEqual(result['status'], 'blocked')
         self.assertEqual(result['steps'], [])
 
     def test_real_stage_stops_on_nonzero_mocked_native_exit(self):
+        """Verify real stage stops on nonzero mocked native exit."""
         result = self.run_fixture(r'''
 function Invoke-FixturePython { $global:LASTEXITCODE = 7 }
 & $script:realStage -Python 'Invoke-FixturePython' -Entry (Join-Path $PSScriptRoot 'nexen.py') -Stage 'scan'

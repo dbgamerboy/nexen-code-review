@@ -33,6 +33,7 @@ def enrich_prompt(prompt, task_type='code', pool=None):
 
 
 def prompt_with_context(prompt, packet):
+    """Perform the prompt with context operation."""
     context = packet.get('text', '')
     if not context:
         raise ValueError('Shared memory returned no context. Check the memory index.')

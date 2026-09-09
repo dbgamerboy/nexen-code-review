@@ -12,26 +12,37 @@ from storage_policy import require_output_path
 class Response:
     status = 200
     def __init__(self, payload, content_type='application/json'):
+        """Initialize the Response instance."""
         self.raw = json.dumps(payload).encode() if content_type == 'application/json' else payload.encode()
         self.headers = {'Content-Type': content_type}
-    def __enter__(self): return self
-    def __exit__(self, *args): pass
-    def read(self, limit): return self.raw[:limit]
+    def __enter__(self):
+        """Perform the enter operation."""
+        return self
+    def __exit__(self, *args):
+        """Perform the exit operation."""
+        pass
+    def read(self, limit):
+        """Read the operation."""
+        return self.raw[:limit]
 
 
 class HarnessContracts(unittest.TestCase):
     def setUp(self):
         # This adapter currently requires an F: root. Create its repository-owned
         # fixture parent lazily instead of requiring a private preexisting folder.
+        """Prepare shared test fixtures."""
         parent = require_output_path(Path(__file__).resolve().parent/'work'/'harness-contract-fixtures')
         parent.mkdir(parents=True, exist_ok=True)
         self.temp = tempfile.TemporaryDirectory(dir=parent)
         self.root = Path(self.temp.name)
         self.bridge = HarnessBridge(None, self.root, self.root/'state')
 
-    def tearDown(self): self.temp.cleanup()
+    def tearDown(self):
+        """Clean up shared test fixtures."""
+        self.temp.cleanup()
 
     def test_json_endpoints_require_objects_but_dashboard_html_remains_valid(self):
+        """Verify json endpoints require objects but dashboard html remains valid."""
         for payload, content_type in (([], 'application/json'), ('scalar', 'application/json'),
                                       (None, 'application/json'), ('<html>Dashboard</html>', 'text/html')):
             with self.subTest(payload=payload), patch('harness_bridge.build_opener') as opener:
@@ -43,6 +54,7 @@ class HarnessContracts(unittest.TestCase):
             self.assertEqual(local_request('http://127.0.0.1:20128')['status'], 200)
 
     def test_invalid_tags_never_generate_and_status_remains_available(self):
+        """Verify invalid tags never generate and status remains available."""
         for payload in ([], 'scalar', None, {'models':None}, {'models':'invalid'}):
             with self.subTest(payload=payload), patch('harness_bridge.build_opener') as opener:
                 opener.return_value.open.return_value = Response(payload)
@@ -55,12 +67,14 @@ class HarnessContracts(unittest.TestCase):
                 self.assertEqual(ollama['readiness'], 'unavailable')
 
     def test_mixed_model_records_preserve_only_valid_names(self):
+        """Verify mixed model records preserve only valid names."""
         with patch('harness_bridge.build_opener') as opener:
             opener.return_value.open.return_value = Response({'models':[None, 'bad', {'name':12}, {'name':'test','size':20}]})
             status = self.bridge.status()
         self.assertEqual(next(p for p in status['providers'] if p['id']=='ollama')['models'], [{'name':'test','size':20}])
 
     def test_malformed_generated_response_is_failed_without_retry(self):
+        """Verify malformed generated response is failed without retry."""
         for payload in ([], None, 'scalar'):
             with self.subTest(payload=payload), patch('harness_bridge.build_opener') as opener:
                 opener.return_value.open.side_effect = [Response({'models':[{'name':'test'}]}), Response(payload)]
@@ -72,6 +86,7 @@ class HarnessContracts(unittest.TestCase):
                 self.assertEqual(opener.return_value.open.call_count, 2)
 
     def test_catalog_requires_object_and_record_shapes(self):
+        """Verify catalog requires object and record shapes."""
         folder = self.root/'harnesses'
         folder.mkdir()
         for payload in ([], None, 'bad', {'harnesses':None}, {'harnesses':'bad'}):

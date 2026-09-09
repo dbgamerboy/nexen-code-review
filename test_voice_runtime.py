@@ -26,6 +26,7 @@ class VoiceTests(unittest.TestCase):
             self.assertEqual(voice.interpret(phrase)['type'],'unknown')
 
     def test_audio_boundary_origin_and_low_confidence(self):
+        """Verify audio boundary origin and low confidence."""
         async def run():
             app=FastAPI();voice.register(app)
             headers={'Origin':'http://127.0.0.1:8788','X-Nexen-Action':'launch','Content-Type':'application/octet-stream'}

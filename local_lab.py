@@ -16,9 +16,11 @@ class Prompt(BaseModel):
 
 BASE_URL='http://127.0.0.1:11434'
 def register(app):
+    """Register the runtime routes and lifecycle hooks."""
     busy=asyncio.Lock()
 
     async def models():
+        """Perform the models operation."""
         try:
             async with httpx.AsyncClient(timeout=5,trust_env=False) as c:
                 r=await c.get(BASE_URL+'/api/tags');r.raise_for_status()
@@ -34,6 +36,7 @@ def register(app):
 
     @app.post('/api/lab/chat')
     async def chat(body:Prompt):
+        """Perform the chat operation."""
         if busy.locked():raise HTTPException(429,'One local lab generation is already running. Wait for it to finish.')
         async with busy:
             available=await models()

@@ -15,22 +15,31 @@ from test_support import fixture_root
 
 class FakeProcess:
     def __init__(self, *, output, response=None, hang=False):
+        """Initialize the FakeProcess instance."""
         self.stdin=io.BytesIO();self.returncode=None if hang else 0
         self.killed=False;self.waits=[]
         if response is not None:
             output.write(response);output.flush()
-    def poll(self):return self.returncode
-    def kill(self):self.killed=True;self.returncode=-1
-    def wait(self,timeout):self.waits.append(timeout);return self.returncode
+    def poll(self):
+        """Perform the poll operation."""
+        return self.returncode
+    def kill(self):
+        """Perform the kill operation."""
+        self.killed=True;self.returncode=-1
+    def wait(self,timeout):
+        """Wait for the operation."""
+        self.waits.append(timeout);return self.returncode
 
 
 class ProviderWorkerTests(unittest.TestCase):
     def setUp(self):
+        """Prepare shared test fixtures."""
         self.temp=tempfile.TemporaryDirectory(dir=fixture_root());self.root=Path(self.temp.name)
         self.addCleanup(self.temp.cleanup)
         self.payload={'provider':'ollama','model':'fixture','base_url':'http://127.0.0.1:11434','prompt':'PRIVATE FIXTURE'}
 
     def test_private_payload_never_enters_fixed_argv_and_output_is_returned(self):
+        """Verify private payload never enters fixed argv and output is returned."""
         seen={}
         def spawn(argv,**kwargs):
             seen.update(argv=argv,kwargs=kwargs)
@@ -47,6 +56,7 @@ class ProviderWorkerTests(unittest.TestCase):
         self.assertEqual(list(self.root.glob('request-*')),[])
 
     def test_stuck_child_is_killed_only_through_owned_handle_at_hard_deadline(self):
+        """Verify stuck child is killed only through owned handle at hard deadline."""
         made=[]
         def spawn(argv,**kwargs):
             process=FakeProcess(output=kwargs['stdout'],hang=True);made.append(process);return process
@@ -57,6 +67,7 @@ class ProviderWorkerTests(unittest.TestCase):
         self.assertEqual(list(self.root.glob('request-*')),[])
 
     def test_stop_signal_cancels_inflight_child_without_another_request(self):
+        """Verify stop signal cancels inflight child without another request."""
         stop=threading.Event();made=[]
         def spawn(argv,**kwargs):
             process=FakeProcess(output=kwargs['stdout'],hang=True);made.append(process);stop.set();return process
@@ -66,6 +77,7 @@ class ProviderWorkerTests(unittest.TestCase):
             self.assertIsNone(worker.run_request(self.payload,lambda:True,root=self.root,popen=lambda *a,**k:self.fail('No process')))
 
     def test_request_and_response_limits_fail_without_unbounded_data(self):
+        """Verify request and response limits fail without unbounded data."""
         with self.assertRaises(worker.ProviderRequestError) as error:
             worker.run_request({**self.payload,'prompt':'x'*(worker.MAX_INPUT+1)},lambda:False,root=self.root,popen=lambda *a,**k:self.fail('No oversized request'))
         self.assertEqual(error.exception.provider_error_class,'RequestTooLarge')
@@ -75,6 +87,7 @@ class ProviderWorkerTests(unittest.TestCase):
         self.assertEqual(error.exception.provider_error_class,'ResponseTooLarge')
 
     def test_worker_failure_only_exposes_safe_metadata(self):
+        """Verify worker failure only exposes safe metadata."""
         def spawn(argv,**kwargs):return FakeProcess(output=kwargs['stdout'],response=json.dumps({'ok':False,'error_class':'ReadTimeout','http_status':503,'private':'never surfaced'}).encode())
         with self.assertRaises(worker.ProviderRequestError) as error:
             worker.run_request(self.payload,lambda:False,root=self.root,popen=spawn)
@@ -83,10 +96,12 @@ class ProviderWorkerTests(unittest.TestCase):
         self.assertNotIn('never surfaced',str(error.exception))
 
     def test_fixed_dispatch_rejects_unknown_provider_without_requests(self):
+        """Verify fixed dispatch rejects unknown provider without requests."""
         with patch('httpx.post',side_effect=AssertionError('No network')):
             with self.assertRaises(ValueError):worker.provider_text({'provider':'shell','prompt':'anything','model':'anything'})
 
     def test_real_isolated_worker_loads_dependencies_and_rejects_without_network(self):
+        """Verify real isolated worker loads dependencies and rejects without network."""
         with self.assertRaises(worker.ProviderRequestError) as error:
             worker.run_request({**self.payload,'provider':'invalid-fixture'},lambda:False,root=self.root,max_seconds=10)
         self.assertEqual(error.exception.provider_error_class,'ValueError')
@@ -94,6 +109,7 @@ class ProviderWorkerTests(unittest.TestCase):
 
     @unittest.skipUnless(sys.platform=='win32','Windows redirector regression')
     def test_direct_base_process_is_the_owned_pid_and_kill_reaps_it(self):
+        """Verify direct base process is the owned pid and kill reaps it."""
         from storage_policy import tool_environment
         base,_=worker.worker_runtime()
         with subprocess.Popen([str(base),'-I','-S','-B','-c',

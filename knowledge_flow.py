@@ -11,6 +11,7 @@ STAGES = (
 
 
 def flow_for(packet):
+    """Perform the flow for operation."""
     packet = packet if isinstance(packet, dict) else {}
     pool = packet.get('pool')
     label = pool.get('label') if isinstance(pool, dict) else None

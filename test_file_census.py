@@ -18,6 +18,7 @@ TEST_ROOT.mkdir(parents=True, exist_ok=True)
 
 class CensusTest(unittest.TestCase):
     def setUp(self):
+        """Prepare shared test fixtures."""
         self.temporary = tempfile.TemporaryDirectory(prefix="case-", dir=TEST_ROOT)
         self.base = Path(self.temporary.name).resolve()
         assert self.base.is_relative_to(TEST_ROOT.resolve())
@@ -27,9 +28,11 @@ class CensusTest(unittest.TestCase):
 
     def tearDown(self):
         # The resolved recursive cleanup target was checked against the test workspace.
+        """Clean up shared test fixtures."""
         self.temporary.cleanup()
 
     def test_resume_unique_metadata_and_source_unchanged(self):
+        """Verify resume unique metadata and source unchanged."""
         (self.root / "nested").mkdir()
         samples = {"plan.md": b"original plan", "nested/clip.mp4": b"fake media",
                    "nested/model.gguf": b"fake model", "nested/payload.py": b"raise RuntimeError('never execute')",
@@ -63,6 +66,7 @@ class CensusTest(unittest.TestCase):
         self.assertEqual(before, {name: hashlib.sha256((self.root / name).read_bytes()).hexdigest() for name in samples})
 
     def test_unpaired_windows_filename_is_recorded_without_crashing(self):
+        """Verify unpaired windows filename is recorded without crashing."""
         good = self.root / 'normal.mp3'
         good.write_bytes(b'fixture')
         (self.root / '\u97f3\u697d\U0001f3a7.wav').write_bytes(b'unicode fixture')
@@ -79,6 +83,7 @@ class CensusTest(unittest.TestCase):
         census.close()
 
     def test_reparse_detection_and_outside_queue(self):
+        """Verify reparse detection and outside queue."""
         self.assertTrue(is_reparse(SimpleNamespace(st_mode=stat.S_IFDIR, st_file_attributes=0x400)))
         self.assertTrue(is_reparse(SimpleNamespace(st_mode=stat.S_IFLNK)))
         self.assertFalse(is_reparse(SimpleNamespace(st_mode=stat.S_IFDIR, st_file_attributes=0)))
@@ -94,6 +99,7 @@ class CensusTest(unittest.TestCase):
         census.close()
 
     def test_pause_resume_and_single_writer(self):
+        """Verify pause resume and single writer."""
         (self.root / "plan.txt").write_text("fixture")
         self.state.mkdir()
         (self.state / "PAUSE").write_text("test")

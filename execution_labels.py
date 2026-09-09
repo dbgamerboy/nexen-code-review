@@ -9,6 +9,7 @@ ACCOUNT_IDS = frozenset({'openrouter', 'omniroute', 'n8n', 'amboras', 'ads', 'su
 
 
 def label(kind, reason, step, scope):
+    """Perform the label operation."""
     return dict(execution_class=kind, execution_reason=reason,
                 execution_next_step=step, execution_scope=scope)
 

@@ -68,6 +68,7 @@ class DesktopTests(unittest.TestCase):
         self.assertEqual(self.native.clicks,[(point['x'],point['y'])])
 
     def test_non_ascii_session_token_is_denied_without_mouse_move(self):
+        """Verify non ascii session token is denied without mouse move."""
         self.a.arm()
         with self.assertRaises(HTTPException) as error:
             self.a.act('move', self.point('\u00e9' * 43))

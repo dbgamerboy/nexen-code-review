@@ -9,12 +9,14 @@ from memory_runtime import prompt_with_context
 
 class MemoryRelevanceTests(unittest.TestCase):
     def test_empty_context_raises_typed_error_before_any_model_request(self):
+        """Verify empty context raises typed error before any model request."""
         for packet in ({},{'text':''},{'text':None}):
             with self.subTest(packet=packet):
                 with self.assertRaisesRegex(ValueError,'Shared memory returned no context. Check the memory index.'):
                     prompt_with_context('Current fixture request',packet)
 
     def test_nonempty_context_preserves_evidence_and_current_request(self):
+        """Verify nonempty context preserves evidence and current request."""
         text='SOURCE fixture:7\nOriginal evidence with exact text.'
         request='Implement the current Windows task.'
         result=prompt_with_context(request,{'text':text})

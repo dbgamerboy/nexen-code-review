@@ -67,6 +67,7 @@ def inspect(c,p):
     except Exception as e:
         c.rollback();c.execute('INSERT INTO errors VALUES(?,?)',(str(p),str(e)));c.commit()
 def scan(roots):
+    """Perform the scan operation."""
     c=connect();seen=0
     def error(e):c.execute('INSERT INTO errors VALUES(?,?)',(str(e.filename),str(e)));c.commit()
     for root in roots:

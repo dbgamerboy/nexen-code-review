@@ -9,6 +9,7 @@ from storage_policy import require_output_path, tool_environment, StoragePolicyE
 
 class OutputPolicyTests(unittest.TestCase):
     def test_invalid_destinations_fail_before_filesystem_access(self):
+        """Verify invalid destinations fail before filesystem access."""
         invalid=['C:/NEXEN/output','D:/output','E:/output','relative/file','H:relative',
                  r'\\server\share\file',r'\\?\H:\file','H:/a/../b','H:/a/file:stream','F:/NUL.txt','H:/trailing.']
         with patch.object(Path,'lstat',side_effect=AssertionError('No filesystem access allowed')):
@@ -16,6 +17,7 @@ class OutputPolicyTests(unittest.TestCase):
                 with self.subTest(path=value),self.assertRaises(StoragePolicyError):require_output_path(value)
 
     def test_owned_output_and_environment_remain_on_h(self):
+        """Verify owned output and environment remain on h."""
         with tempfile.TemporaryDirectory(dir='H:/NEXEN/temp') as fixture:
             root=Path(fixture)
             output=require_output_path(root/'exports'/'mix.mp3',within=root)
@@ -29,6 +31,7 @@ class OutputPolicyTests(unittest.TestCase):
             with self.assertRaises(StoragePolicyError):require_output_path(root.parent/'elsewhere',within=root)
 
     def test_reparse_and_dangling_symlink_attributes_are_rejected(self):
+        """Verify reparse and dangling symlink attributes are rejected."""
         with tempfile.TemporaryDirectory(dir='H:/NEXEN/temp') as fixture:
             root=Path(fixture); original=Path.lstat
             for mode,attributes in ((0o120777,0),(0o40777,0x400)):
@@ -39,6 +42,7 @@ class OutputPolicyTests(unittest.TestCase):
                     require_output_path(root/'redirect'/'file.mp3')
 
     def test_access_errors_do_not_fall_back_to_another_drive(self):
+        """Verify access errors do not fall back to another drive."""
         with patch.object(Path,'lstat',side_effect=PermissionError('fixture denial')):
             with self.assertRaises(PermissionError):require_output_path('H:/NEXEN/output')
 

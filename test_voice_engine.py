@@ -16,6 +16,7 @@ class VoiceTests(unittest.TestCase):
             load.assert_not_called()
 
     def test_text_and_word_confidence_aggregation(self):
+        """Verify text and word confidence aggregation."""
         recognizer = Mock()
         recognizer.AcceptWaveform.side_effect = [True, False]
         recognizer.Result.return_value = json.dumps({'text':'open the money page', 'result':[{'conf':0.8},{'conf':1.0}]})

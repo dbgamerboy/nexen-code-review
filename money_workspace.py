@@ -73,6 +73,7 @@ def dict_rows(cursor):
 
 class MoneyWorkspace:
     def __init__(self, db, engine):
+        """Initialize the MoneyWorkspace instance."""
         self.db, self.engine = db, engine
         self.tracker = Tracker(db)
         with db.connect() as c:
@@ -106,6 +107,7 @@ class MoneyWorkspace:
 
     @staticmethod
     def normalize_track(track_id, tracks, aliases):
+        """Normalize track."""
         canonical = aliases.get(track_id, track_id)
         if canonical not in tracks:
             raise HTTPException(404, 'Unknown money track or opportunity.')
@@ -113,6 +115,7 @@ class MoneyWorkspace:
 
     @staticmethod
     def assignment(seed_key, saved_track, tracks):
+        """Perform the assignment operation."""
         if saved_track in tracks:
             return dict(basis='saved_link', track_id=saved_track, seed_key=seed_key)
         mapped = SEED_TRACKS.get(seed_key)
@@ -121,6 +124,7 @@ class MoneyWorkspace:
         return dict(basis='unassigned', track_id=None, seed_key=seed_key)
 
     def workspace(self, offset=0, limit=500):
+        """Perform the workspace operation."""
         offset, limit = max(0, offset), max(1, min(500, limit))
         tracks, _, opportunities = self.catalog()
         with self.db.connect() as c:
@@ -180,6 +184,7 @@ class MoneyWorkspace:
             executed=False, paid_requests=0)
 
     def link(self, task_id, track_id):
+        """Perform the link operation."""
         tracks, aliases, _ = self.catalog()
         canonical = self.normalize_track(track_id, tracks, aliases)
         with self.db.connect() as c:
@@ -235,22 +240,26 @@ class MoneyWorkspace:
 
 
 def register(app, db, engine):
+    """Register the runtime routes and lifecycle hooks."""
     from pc_control import validate_request
     workspace = MoneyWorkspace(db, engine)
 
     @app.get('/api/money/workspace')
     def status(request: Request, offset: int = Query(default=0, ge=0),
                limit: int = Query(default=500, ge=1, le=500)):
+        """Return the current runtime status."""
         validate_request(request)
         return workspace.workspace(offset, limit)
 
     @app.post('/api/money/tasks/{task_id}/track')
     def link(task_id: int, body: TrackBody, request: Request):
+        """Perform the link operation."""
         validate_request(request, mutation=True)
         return workspace.link(task_id, body.track_id)
 
     @app.post('/api/money/tasks')
     def create(body: WorkspaceTaskBody, request: Request):
+        """Create the operation."""
         validate_request(request, mutation=True)
         return workspace.create(body)
 

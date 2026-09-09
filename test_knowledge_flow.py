@@ -23,6 +23,7 @@ class KnowledgeFlowTests(unittest.TestCase):
             self.assertIn(expected,instructions)
 
     def test_malformed_optional_containers_cannot_crash_or_claim_sources(self):
+        """Verify malformed optional containers cannot crash or claim sources."""
         for packet in (None, [], 'bad', {'pool': None, 'citations': None},
                        {'pool': [], 'citations': 2}, {'pool': 'life', 'citations': 'not sources'},
                        {'pool': {'label': []}, 'citations': {'source_id':'not a list'}}):

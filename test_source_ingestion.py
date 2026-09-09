@@ -12,6 +12,7 @@ from memory_bridge import SharedMemory
 class SourceTests(unittest.TestCase):
     def setUp(self):
         # Source classification excludes cache/work/temp ancestors by design.
+        """Prepare shared test fixtures."""
         root=Path(__file__).resolve().parent/'fixtures'/'source-ingestion-tests'
         root.mkdir(parents=True,exist_ok=True)
         self.temp=tempfile.TemporaryDirectory(prefix='case-',dir=root)

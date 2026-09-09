@@ -57,6 +57,7 @@ class ModeTests(unittest.TestCase):
         self.assertEqual(s['money_limits']['total_cap_cents'], 5000)
 
     def test_goal_vocabulary_matches_catalog_and_unknown_stored_goal_is_tolerated(self):
+        """Verify goal vocabulary matches catalog and unknown stored goal is tolerated."""
         for goal in am.GOALS:
             self.assertEqual(am.ModeBody(enabled=True, goal=goal).goal, goal)
         with self.db.connect() as c:

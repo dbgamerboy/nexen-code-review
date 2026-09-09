@@ -24,12 +24,14 @@ SHUTDOWN_WAIT_SECONDS = ACTIVE_WAIT_SECONDS + 5
 
 
 def timestamp():
+    """Perform the timestamp operation."""
     return datetime.now(timezone.utc).isoformat()
 
 
 class ContinuityWorker:
     def __init__(self, db, kilo, mode, *, state_dir=STATE, kilo_root=KILO_ROOT,
                  base=BASE, interval=10, clock=time.time):
+        """Initialize the ContinuityWorker instance."""
         self.db, self.kilo, self.mode = db, kilo, mode
         self.state_dir, self.kilo_root, self.base = Path(state_dir), Path(kilo_root), Path(base)
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -61,9 +63,11 @@ class ContinuityWorker:
             c.execute('INSERT OR IGNORE INTO continuity_settings(id,enabled,updated_at) VALUES(1,0,?)', (timestamp(),))
 
     def settings(self):
+        """Perform the settings operation."""
         return self.db.rows('SELECT * FROM continuity_settings WHERE id=1')[0]
 
     def set_enabled(self, enabled):
+        """Perform the set enabled operation."""
         with self.db.connect() as c:
             c.execute('UPDATE continuity_settings SET enabled=?,updated_at=?,last_error=NULL WHERE id=1',
                       (int(enabled), timestamp()))
@@ -72,6 +76,7 @@ class ContinuityWorker:
         return self.status()
 
     def gate(self):
+        """Perform the gate operation."""
         if not self.settings()['enabled']:
             return 'paused'
         # Read existing controls; never remove or rewrite another owner's pause marker.
@@ -86,12 +91,14 @@ class ContinuityWorker:
         return 'ready' if reason == 'ready' else 'automatic_' + str(reason)[:60]
 
     def update_receipt(self, ident, state, *, attempts=None, detail='', result_status=None):
+        """Update receipt."""
         with self.db.connect() as c:
             c.execute('''UPDATE continuity_receipts SET state=?,attempts=COALESCE(?,attempts),
               detail=?,result_status=?,finished_at=? WHERE job_id=?''',
               (state, attempts, detail, result_status, None if state in {'claimed','running'} else timestamp(), ident))
 
     def heartbeat(self, health=None):
+        """Perform the heartbeat operation."""
         if health:
             self.health = health
         self.last_heartbeat = self.clock()
@@ -103,6 +110,7 @@ class ContinuityWorker:
         })
 
     async def start(self):
+        """Start the operation."""
         if self.loop_task and not self.loop_task.done():
             return False
         lease = SingleWriter(self.state_dir)
@@ -144,6 +152,7 @@ class ContinuityWorker:
             return False
 
     def next_job(self):
+        """Perform the next job operation."""
         rows = self.db.rows('''SELECT j.id FROM kilo_draft_jobs j
           LEFT JOIN continuity_receipts r ON r.job_id=j.id
           WHERE j.status='prepared' AND r.job_id IS NULL ORDER BY j.created_at,j.id LIMIT 1''')
@@ -225,6 +234,7 @@ class ContinuityWorker:
             return outcome
 
     async def run_loop(self):
+        """Run loop."""
         try:
             while not self.stopping:
                 try:
@@ -266,6 +276,7 @@ class ContinuityWorker:
                     self.logger.error('shutdown_signal_failed')
 
     async def shutdown(self):
+        """Shut down the operation."""
         self.stopping = True
         self.wake.set()
         try:
@@ -298,6 +309,7 @@ class ContinuityWorker:
                         self.logger.removeHandler(handler)
 
     def status(self):
+        """Return the current runtime status."""
         settings = self.settings()
         rows = self.db.rows('SELECT * FROM continuity_receipts ORDER BY claimed_at DESC LIMIT 20')
         counts = {row['state']: row['n'] for row in self.db.rows('SELECT state,count(*) n FROM continuity_receipts GROUP BY state')}
@@ -318,6 +330,7 @@ class ContinuityWorker:
 
 
 def register(app, db, kilo, mode):
+    """Register the runtime routes and lifecycle hooks."""
     from app_lifecycle import register_lifecycle
     from pc_control import validate_request
     worker = ContinuityWorker(db, kilo, mode)
@@ -325,21 +338,25 @@ def register(app, db, kilo, mode):
 
     @app.get('/continuity', response_class=HTMLResponse)
     def page(request: Request):
+        """Serve the requested application page."""
         validate_request(request)
         return (BASE / 'continuity.html').read_text(encoding='utf-8')
 
     @app.get('/api/continuity/status')
     def status(request: Request):
+        """Return the current runtime status."""
         validate_request(request)
         return worker.status()
 
     @app.post('/api/continuity/enable')
     async def enable(request: Request):
+        """Perform the enable operation."""
         validate_request(request, mutation=True)
         return worker.set_enabled(True)
 
     @app.post('/api/continuity/pause')
     async def pause(request: Request):
+        """Perform the pause operation."""
         validate_request(request, mutation=True)
         return worker.set_enabled(False)
 

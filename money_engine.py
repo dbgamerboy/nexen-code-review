@@ -19,6 +19,7 @@ COST_FIELDS = ('supplier_cost_cents', 'shipping_cents', 'packaging_cents',
 
 
 def now():
+    """Return the current UTC timestamp."""
     return datetime.now(timezone.utc).isoformat()
 
 
@@ -43,6 +44,7 @@ class OpportunityCreate(BaseModel):
     @field_validator('title')
     @classmethod
     def title_not_blank(cls, value):
+        """Perform the title not blank operation."""
         if not value.strip():
             raise ValueError('Enter an opportunity title')
         return value.strip()
@@ -56,6 +58,7 @@ class OpportunityUpdate(BaseModel):
 
 
 def calculate(inputs):
+    """Perform the calculate operation."""
     values = Inputs.model_validate(inputs).model_dump()
     missing = [key for key in COST_FIELDS if values[key] is None]
     result = dict(complete=not missing, missing=missing, landed_cost_cents=None,
@@ -81,6 +84,7 @@ def calculate(inputs):
 
 class Engine:
     def __init__(self, db):
+        """Initialize the Engine instance."""
         self.db = db
         with db.connect() as c:
             c.executescript('''
@@ -99,23 +103,27 @@ class Engine:
                   (key, title, category, status, evidence, next_step, now(), now()))
 
     def inputs(self):
+        """Perform the inputs operation."""
         with self.db.connect() as c:
             row = c.execute('SELECT payload,updated_at FROM money_inputs WHERE id=1').fetchone()
         return {'values': Inputs.model_validate_json(row[0]).model_dump(), 'updated_at': row[1],
                 'source': 'Manual scenario inputs; initial price observed in Amboras, not a live price feed.'}
 
     def save_inputs(self, body):
+        """Save inputs."""
         with self.db.connect() as c:
             c.execute('UPDATE money_inputs SET payload=?,updated_at=? WHERE id=1', (body.model_dump_json(), now()))
         return self.status()
 
     def opportunities(self):
+        """Perform the opportunities operation."""
         with self.db.connect() as c:
             cur = c.execute('SELECT id,title,category,status,evidence,next_step,created_at,updated_at FROM money_opportunities ORDER BY id')
             names = [x[0] for x in cur.description]
             return [dict(zip(names, r), status_source='user_reported', provider_verified=False) for r in cur.fetchall()]
 
     def create(self, body):
+        """Create the operation."""
         with self.db.connect() as c:
             if c.execute('SELECT count(*) FROM money_opportunities').fetchone()[0] >= 500:
                 raise HTTPException(409, 'Opportunity limit reached (500). Update an existing opportunity.')
@@ -125,6 +133,7 @@ class Engine:
     def update(self, opportunity_id, body):
         # PATCH omission preserves saved notes; an explicitly supplied empty
         # string still clears that field. Column names are code-owned.
+        """Update the operation."""
         fields = [name for name in ('status', 'evidence', 'next_step') if name in body.model_fields_set]
         assignments = ','.join(name+'=?' for name in fields)
         with self.db.connect() as c:
@@ -134,6 +143,7 @@ class Engine:
                 raise HTTPException(404, 'Opportunity not found')
 
     def progress(self):
+        """Perform the progress operation."""
         scope = 'Tracked tasks mentioning Lumipaw, dropshipping, music release or WDR brand; not overall code completion.'
         try:
             with self.db.connect() as c:
@@ -146,6 +156,7 @@ class Engine:
             return dict(available=False, total=None, completed=None, percent=None, scope=scope)
 
     def status(self):
+        """Return the current runtime status."""
         values = self.inputs()
         gates = [
             dict(id='supplier', title='Confirm fulfillment costs', detail='Supplier cost, delivery window, packaging and shipping evidence are missing.', href='https://admin.amboras.com/products', action='Open products', state='unverified'),
@@ -165,31 +176,37 @@ class Engine:
 
 
 def register(app, db):
+    """Register the runtime routes and lifecycle hooks."""
     from pc_control import validate_request
     engine = Engine(db)
 
     @app.get('/money', response_class=HTMLResponse)
     def money_page(request: Request):
+        """Perform the money page operation."""
         validate_request(request)
         return (BASE / 'money.html').read_text(encoding='utf-8')
 
     @app.get('/api/money/status')
     def status(request: Request):
+        """Return the current runtime status."""
         validate_request(request)
         return engine.status()
 
     @app.post('/api/money/inputs')
     def inputs(body: Inputs, request: Request):
+        """Perform the inputs operation."""
         validate_request(request, mutation=True)
         return engine.save_inputs(body)
 
     @app.post('/api/money/opportunities')
     def create(body: OpportunityCreate, request: Request):
+        """Create the operation."""
         validate_request(request, mutation=True)
         return {'id': engine.create(body), 'opportunities': engine.opportunities()}
 
     @app.patch('/api/money/opportunities/{opportunity_id}')
     def update(opportunity_id: int, body: OpportunityUpdate, request: Request):
+        """Update the operation."""
         validate_request(request, mutation=True)
         engine.update(opportunity_id, body)
         return {'opportunities': engine.opportunities()}

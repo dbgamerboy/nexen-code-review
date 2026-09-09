@@ -87,6 +87,7 @@ def engine_status():
 
 
 def register(app,db=None):
+    """Register the runtime routes and lifecycle hooks."""
     busy=threading.Lock()
 
     @app.get('/voice',response_class=HTMLResponse)
@@ -108,6 +109,7 @@ def register(app,db=None):
 
     @app.post('/api/voice/transcribe')
     async def transcribe(request:Request):
+        """Perform the transcribe operation."""
         from pc_control import validate_request
         validate_request(request,mutation=True)
         if request.headers.get('content-type','').split(';')[0] not in ('application/octet-stream','audio/pcm'):

@@ -14,13 +14,17 @@ ROOT = Path(os.environ.get('NEXEN_TEST_PLAN_ROOT', Path(__file__).resolve().pare
 ROOT.mkdir(parents=True, exist_ok=True)
 
 def packet(ident,**extra):
+    """Perform the packet operation."""
     return {'id':ident,'title':'Fixture '+ident,'prompt':'Reference fixture','status':'prepared','executed':False,'task_ids':[],'citations':[],**extra}
 
 class DB:
-    def rows(self,*args):return [{'id':1,'text':'WDR game fixture','status':'planned','created_at':'2026-09-09'}]
+    def rows(self,*args):
+        """Perform the rows operation."""
+        return [{'id':1,'text':'WDR game fixture','status':'planned','created_at':'2026-09-09'}]
 
 class PlanSourcesTests(unittest.TestCase):
     def setUp(self):
+        """Prepare shared test fixtures."""
         self.temporary = tempfile.TemporaryDirectory(prefix='case-', dir=ROOT)
         self.base = Path(self.temporary.name).resolve()
         self.assertTrue(self.base.is_relative_to(ROOT.resolve()))
@@ -28,8 +32,10 @@ class PlanSourcesTests(unittest.TestCase):
         self.modules=self.base/'modules';self.sources=self.base/'sources';self.modules.mkdir();self.sources.mkdir()
         self.report=self.base/'report.md';self.report.write_text('Source report <script>do not execute</script>',encoding='utf-8')
     def save(self,folder,ident,**extra):
+        """Save the operation."""
         p=folder/(ident+'.json');p.write_text(json.dumps(packet(ident,**extra)),encoding='utf-8');return p
     def test_module_history_cannot_hide_nineteen_source_packets(self):
+        """Verify module history cannot hide nineteen source packets."""
         for i in range(43):self.save(self.modules,'game-'+str(i))
         for i in range(19):self.save(self.sources,'source-'+format(i,'020x'),source={'modified_at':'historical-mtime','timestamp_basis':'file mtime, not message date'})
         (self.sources/'prompt-catalog.json').write_text(json.dumps({'prompts':[1]}),encoding='utf-8')
@@ -39,6 +45,7 @@ class PlanSourcesTests(unittest.TestCase):
         self.assertTrue(all(p['status']=='prepared' and p['executed'] is False for p in result['packages']))
         self.assertTrue(all(p['source']['timestamp_basis']=='file mtime, not message date' for p in result['packages'] if p['package_kind']=='source'))
     def test_invalid_oversized_and_nonprepared_sources_are_skipped(self):
+        """Verify invalid oversized and nonprepared sources are skipped."""
         self.save(self.sources,'source-'+format(1,'020x'))
         self.save(self.sources,'source-'+format(2,'020x'),executed=True,status='done')
         (self.sources/('source-'+format(3,'020x')+'.json')).write_text('x'*100000,encoding='utf-8')
@@ -47,6 +54,7 @@ class PlanSourcesTests(unittest.TestCase):
         self.assertEqual(result['counts']['source'],1)
         self.assertEqual(len(result['warnings']),3)
     def test_fixed_artifacts_are_authenticated_and_compile_stays_prepared(self):
+        """Verify fixed artifacts are authenticated and compile stays prepared."""
         self.save(self.sources,'source-'+format(1,'020x'))
         (self.sources/'prompt-catalog.json').write_text(json.dumps({'prompts':[{'id':'fixture-prompt'}]}),encoding='utf-8')
         app=FastAPI();store=app_auth.AuthStore(self.base/'auth')

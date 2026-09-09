@@ -245,6 +245,7 @@ def bootstrap(root=ROOT):
 
 
 def context(project, query='', root=ROOT):
+    """Perform the context operation."""
     if project not in PROJECTS:
         raise ValueError('Unknown project')
     names = ['context/user.md', 'SOUL.md', 'shared/methodology.md',
@@ -275,6 +276,7 @@ def receipt_path(name):
 
 
 def doctor(root=ROOT, live=True):
+    """Perform the doctor operation."""
     checks = []
     def check(name, passed, detail):
         checks.append({'name': name, 'status': 'passed' if passed else 'needs_attention', 'detail': detail})

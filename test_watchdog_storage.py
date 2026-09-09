@@ -14,6 +14,7 @@ from storage_policy import StoragePolicyError
 
 class WatchdogStorageTests(unittest.TestCase):
     def setUp(self):
+        """Prepare shared test fixtures."""
         root = Path('H:/NEXEN/work/tests')
         root.mkdir(parents=True, exist_ok=True)
         self.temp = tempfile.TemporaryDirectory(prefix='watchdog-storage-', dir=root)
@@ -25,6 +26,7 @@ class WatchdogStorageTests(unittest.TestCase):
             item.start()
 
     def tearDown(self):
+        """Clean up shared test fixtures."""
         for item in reversed(self.patches):
             item.stop()
         for logger in logging.Logger.manager.loggerDict.values():
@@ -36,6 +38,7 @@ class WatchdogStorageTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_each_fixed_child_gets_h_profile_and_cache(self):
+        """Verify each fixed child gets h profile and cache."""
         service = wd.Watchdog(self.root / 'state', spawn=self.spawn)
         for target in ('hub', 'census'):
             service.launch(target)
@@ -50,11 +53,13 @@ class WatchdogStorageTests(unittest.TestCase):
             self.assertIn(command[1], [str(wd.BASE / 'nexen.py'), str(wd.BASE / 'file_census.py')])
 
     def test_disallowed_state_rejected_before_mkdir(self):
+        """Verify disallowed state rejected before mkdir."""
         with patch.object(Path, 'mkdir', side_effect=AssertionError('No disallowed write')):
             with self.assertRaises(StoragePolicyError):
                 wd.Watchdog(Path('C:/nexen-must-not-create'))
 
     def test_status_entry_stays_read_only(self):
+        """Verify status entry stays read only."""
         state = self.root / 'state'
         state.mkdir()
         (state / 'status.json').write_text(json.dumps({'status': 'fixture'}), encoding='utf-8')
@@ -66,6 +71,7 @@ class WatchdogStorageTests(unittest.TestCase):
         service.assert_not_called()
 
     def test_direct_once_entry_bootstraps_before_worker_creation(self):
+        """Verify direct once entry bootstraps before worker creation."""
         created = []
         fake = SimpleNamespace(tick=Mock())
 
@@ -87,6 +93,7 @@ class WatchdogStorageTests(unittest.TestCase):
         self.spawn.assert_not_called()
 
     def test_child_storage_failure_records_error_without_spawn_or_fallback(self):
+        """Verify child storage failure records error without spawn or fallback."""
         service = wd.Watchdog(self.root / 'state', spawn=self.spawn)
         with patch.object(wd, 'SERVICE_ROOT', Path('C:/nexen-must-not-create')):
             self.assertIsNone(service.launch('hub'))
@@ -96,12 +103,14 @@ class WatchdogStorageTests(unittest.TestCase):
         self.assertEqual(len(saved['launch_history']['hub']), 1)
 
     def test_unknown_target_never_dispatches(self):
+        """Verify unknown target never dispatches."""
         service = wd.Watchdog(self.root / 'state', spawn=self.spawn)
         with self.assertRaises(ValueError):
             service.launch('arbitrary-command')
         self.spawn.assert_not_called()
 
     def test_disallowed_log_path_is_rejected_without_handler(self):
+        """Verify disallowed log path is rejected without handler."""
         with self.assertRaises(StoragePolicyError):
             wd.logger_for('fixture', Path('C:/nexen-must-not-create'))
 

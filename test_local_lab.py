@@ -12,6 +12,7 @@ import local_lab
 
 class LocalLabContracts(unittest.TestCase):
     def client_for(self, payloads):
+        """Perform the client for operation."""
         app = FastAPI()
         local_lab.register(app)
         seen = []
@@ -24,6 +25,7 @@ class LocalLabContracts(unittest.TestCase):
         return TestClient(app), patch('local_lab.httpx.AsyncClient', side_effect=factory), seen
 
     def test_malformed_model_containers_report_unavailable(self):
+        """Verify malformed model containers report unavailable."""
         for payload in ([], None, 'bad', {'models':None}, {'models':'bad'}):
             with self.subTest(payload=payload):
                 client, mocked, seen = self.client_for([payload])
@@ -33,6 +35,7 @@ class LocalLabContracts(unittest.TestCase):
                 self.assertEqual(seen, ['/api/tags'])
 
     def test_mixed_model_entries_skip_invalid_and_preserve_valid(self):
+        """Verify mixed model entries skip invalid and preserve valid."""
         client, mocked, _ = self.client_for([{'models':[None,'bad',{'name':4},{'name':'local','size':20}]}])
         with mocked:
             response = client.get('/api/lab/models')
@@ -40,6 +43,7 @@ class LocalLabContracts(unittest.TestCase):
         self.assertEqual(response.json()['models'], [{'name':'local','size':20}])
 
     def test_memory_failures_return_controlled_error_before_model_submission(self):
+        """Verify memory failures return controlled error before model submission."""
         for error in (ValueError('private source'), OSError('private path'), sqlite3.OperationalError('private database')):
             for stage in ('context_for', 'prompt_with_context'):
                 with self.subTest(error=type(error).__name__, stage=stage):
@@ -55,6 +59,7 @@ class LocalLabContracts(unittest.TestCase):
                     self.assertEqual(seen, ['/api/tags'])
 
     def test_malformed_response_objects_return_controlled_model_error(self):
+        """Verify malformed response objects return controlled model error."""
         memory = types.SimpleNamespace(context_for=lambda *a:{'text':'fixture'}, prompt_with_context=lambda *a:'fixture')
         for payload in ([], None, {'message':[]}, {'message':None}):
             with self.subTest(payload=payload):

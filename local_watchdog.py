@@ -47,6 +47,7 @@ def read_json(path):
 
 
 def atomic_json(path, data):
+    """Perform the atomic json operation."""
     path = require_output_path(path)
     temp = require_output_path(path.with_suffix(".json.tmp"), within=path.parent)
     temp.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -110,6 +111,7 @@ def hub_listening():
 
 
 def census_locked():
+    """Perform the census locked operation."""
     path = require_output_path(DATA / "census")
     path.mkdir(parents=True, exist_ok=True)
     try:
@@ -120,6 +122,7 @@ def census_locked():
 
 
 def logger_for(name, directory):
+    """Perform the logger for operation."""
     directory = require_output_path(directory)
     logfile = require_output_path(directory / (name + '.log'), within=directory)
     logger = logging.getLogger(name)
@@ -152,6 +155,7 @@ def capture_output(process, logger):
 class Watchdog:
     def __init__(self, directory=STATE, request=hub_request, listening=hub_listening,
                  spawn=subprocess.Popen, locked=census_locked, now=time.time):
+        """Initialize the Watchdog instance."""
         self.directory = require_output_path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.status_path = self.directory / "status.json"
@@ -181,6 +185,7 @@ class Watchdog:
 
     def launch(self, target):
         # Targets and arguments are code-owned; no UI/source text enters this command.
+        """Perform the launch operation."""
         commands = {
             "hub": [str(PYTHONW), str(BASE / "nexen.py"), "serve"],
             "census": [str(PYTHONW), str(BASE / "file_census.py"), "--root", "F:\\", "--once"],
@@ -217,6 +222,7 @@ class Watchdog:
         atomic_json(self.status_path, self.state)
 
     def pause_census(self, paused):
+        """Perform the pause census operation."""
         marker = require_output_path(DATA / "census" / "PAUSE")
         owned_text = "watchdog:global-pause"
         marker.parent.mkdir(parents=True, exist_ok=True)
@@ -303,6 +309,7 @@ class Watchdog:
 
 
 def main():
+    """Perform the main operation."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--once", action="store_true", help="One lifecycle check")
     parser.add_argument("--status", action="store_true")

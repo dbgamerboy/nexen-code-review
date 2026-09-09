@@ -12,9 +12,11 @@ ENTRY=Path(__file__).with_name('start_on_f.pyw')
 
 class BootstrapStorageTests(unittest.TestCase):
     def run_entry(self):
+        """Run entry."""
         exec(compile(ENTRY.read_text(encoding='utf-8'),str(ENTRY),'exec'),{'__file__':str(ENTRY)})
 
     def test_redirected_cache_stops_before_any_write_or_worker(self):
+        """Verify redirected cache stops before any write or worker."""
         original=Path.lstat
         def inspect(path,*args,**kwargs):
             if path==Path('F:/NEXEN_CACHE'):
@@ -25,6 +27,7 @@ class BootstrapStorageTests(unittest.TestCase):
             mkdir.assert_not_called();worker.assert_not_called()
 
     def test_normal_bootstrap_passes_only_fixed_cache_paths_to_mkdir(self):
+        """Verify normal bootstrap passes only fixed cache paths to mkdir."""
         with patch.dict(os.environ),patch.object(sys,'path',sys.path.copy()),patch.object(sys,'argv',sys.argv.copy()),patch.object(sys,'dont_write_bytecode',True),patch.object(Path,'mkdir',autospec=True) as mkdir,patch.object(runpy,'run_path') as worker,patch.object(os,'chdir'):
             self.run_entry()
             self.assertGreater(len(mkdir.call_args_list),5)

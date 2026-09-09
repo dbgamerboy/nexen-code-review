@@ -20,18 +20,23 @@ from task_tracking import TaskCreate
 from test_support import fixture_root
 
 class DB:
-    def __init__(self,path):self.path=path
+    def __init__(self,path):
+        """Initialize the DB instance."""
+        self.path=path
     @contextmanager
     def connect(self):
+        """Perform the connect operation."""
         conn=sqlite3.connect(self.path,timeout=10);conn.row_factory=sqlite3.Row
         try:yield conn;conn.commit()
         except Exception:conn.rollback();raise
         finally:conn.close()
     def rows(self,sql,args=()):
+        """Perform the rows operation."""
         with self.connect() as conn:return [dict(row) for row in conn.execute(sql,args)]
 
 class KiloBridgeTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        """Perform the asyncSetUp operation."""
         self.temp=tempfile.TemporaryDirectory(dir=fixture_root());self.root=Path(self.temp.name)
         self.patches=[patch.object(module,'ROOT',self.root),patch.object(module,'JOBS',self.root/'jobs'),
                       patch.object(module,'INSTALL',self.root/'install.json')]
@@ -45,6 +50,7 @@ class KiloBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.context_patch=patch.object(module,'context',side_effect=lambda project:copy.deepcopy(self.base_context));self.context_patch.start()
         self.memory_patch=patch('memory_runtime.context_for',return_value=self.memory);self.memory_call=self.memory_patch.start()
     async def asyncTearDown(self):
+        """Perform the asyncTearDown operation."""
         if self.bridge.active:
             self.bridge.cancel(self.bridge.active)
             if self.bridge.worker:await self.bridge.worker
@@ -52,9 +58,12 @@ class KiloBridgeTests(unittest.IsolatedAsyncioTestCase):
         for p in reversed(self.patches):p.stop()
         self.temp.cleanup()
         self.assertFalse(module.RUN_LOCK.locked())
-    def request(self,**changes):return module.DraftRequest(**{'request_key':'a'*32,'task_id':self.task,**changes})
+    def request(self,**changes):
+        """Perform the request operation."""
+        return module.DraftRequest(**{'request_key':'a'*32,'task_id':self.task,**changes})
 
     async def test_prepare_loads_current_profile_and_typed_memory_without_task_mutation(self):
+        """Verify prepare loads current profile and typed memory without task mutation."""
         before=self.bridge.tracker.get(self.task);receipt=self.bridge.prepare(self.request(kind='code'))
         self.memory_call.assert_called_once_with('Fixture: verify NEXEN workflow\n',task_type='code',pool='engineering')
         prompt=(self.root/'jobs'/receipt['id']/'prompt.txt').read_text()
@@ -64,18 +73,21 @@ class KiloBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.bridge.tracker.get(self.task),before)
 
     async def test_prepare_is_idempotent_and_conflicting_reuse_is_rejected(self):
+        """Verify prepare is idempotent and conflicting reuse is rejected."""
         first=self.bridge.prepare(self.request());again=self.bridge.prepare(self.request())
         self.assertEqual(first['id'],again['id']);self.assertEqual(len(self.db.rows('SELECT id FROM kilo_draft_jobs')),1)
         with self.assertRaises(HTTPException) as error:self.bridge.prepare(self.request(instructions='changed'))
         self.assertEqual(error.exception.status_code,409)
 
     async def test_invalid_task_and_request_fields_never_prepare(self):
+        """Verify invalid task and request fields never prepare."""
         with self.assertRaises(HTTPException):self.bridge.prepare(self.request(task_id=999))
         for value in ({'task_id':True},{'task_id':'1'},{'project':'../private'},{'request_key':'bad'},{'command':'anything'}):
             with self.assertRaises(ValidationError):self.request(**value)
         with self.assertRaises(HTTPException):self.bridge.get('../secrets')
 
     async def test_cancel_prepared_job_never_starts_process(self):
+        """Verify cancel prepared job never starts process."""
         receipt=self.bridge.prepare(self.request());result=self.bridge.cancel(receipt['id'])
         self.assertEqual(result['status'],'cancelled')
         with patch.object(module.subprocess,'Popen') as spawn:
@@ -83,6 +95,7 @@ class KiloBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(again['status'],'cancelled');spawn.assert_not_called()
 
     async def test_cancel_during_configuration_releases_worker_without_generation(self):
+        """Verify cancel during configuration releases worker without generation."""
         receipt=self.bridge.prepare(self.request())
         def config():self.bridge.cancelled.set();return True
         with patch.object(module,'verify_config',side_effect=config),patch.object(module.subprocess,'Popen') as spawn:
@@ -90,6 +103,7 @@ class KiloBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.bridge.get(receipt['id'])['status'],'cancelled');spawn.assert_not_called()
 
     async def test_cross_process_lease_prevents_second_worker(self):
+        """Verify cross process lease prevents second worker."""
         receipt=self.bridge.prepare(self.request())
         with module.SingleWriter(self.root):
             with self.assertRaises(HTTPException) as error:await self.bridge.start(receipt['id'])
@@ -97,6 +111,7 @@ class KiloBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.bridge.get(receipt['id'])['status'],'prepared')
 
     async def test_schema_error_or_changed_prompt_never_launches_model(self):
+        """Verify schema error or changed prompt never launches model."""
         receipt=self.bridge.prepare(self.request());folder=self.root/'jobs'/receipt['id']
         (folder/'prompt.txt').write_text('tampered')
         with patch.object(module,'verify_config',return_value=True),patch.object(module.subprocess,'Popen') as spawn:
@@ -104,6 +119,7 @@ class KiloBridgeTests(unittest.IsolatedAsyncioTestCase):
         spawn.assert_not_called();self.assertEqual(self.bridge.get(receipt['id'])['status'],'failed')
 
     async def test_status_preserves_healthy_jobs_when_one_receipt_is_unavailable(self):
+        """Verify status preserves healthy jobs when one receipt is unavailable."""
         broken=self.bridge.prepare(self.request())
         healthy=self.bridge.prepare(self.request(request_key='b'*32))
         (self.root/'jobs'/broken['id']/'receipt.json').write_text('{malformed',encoding='utf-8')
@@ -116,6 +132,7 @@ class KiloBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(error.exception.status_code,403)
 
     async def test_routes_keep_origin_guard_and_actual_auth_gate(self):
+        """Verify routes keep origin guard and actual auth gate."""
         app=FastAPI();module.register(app,self.db)
         with TestClient(app,base_url='http://127.0.0.1:8788',client=('127.0.0.1',40100)) as client:
             self.assertEqual(client.get('/api/kilo/status',headers={'Host':'evil.invalid'}).status_code,403)
@@ -133,6 +150,7 @@ class KiloBridgeTests(unittest.IsolatedAsyncioTestCase):
                 'Origin':'http://127.0.0.1:8788','X-Nexen-Action':'launch','X-Nexen-Service':auth.service_key}).status_code,401)
 
     async def test_recover_unavailable_receipt_preserves_other_jobs_without_retry(self):
+        """Verify recover unavailable receipt preserves other jobs without retry."""
         broken=self.bridge.prepare(self.request())
         healthy=self.bridge.prepare(self.request(request_key='b'*32))
         for receipt in (broken,healthy):
@@ -147,6 +165,7 @@ class KiloBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(error.exception.status_code,403)
 
     async def test_shutdown_missing_receipt_signals_owned_thread(self):
+        """Verify shutdown missing receipt signals owned thread."""
         ident='c'*32;self.bridge.active=ident
         async def finish():
             while not self.bridge.cancelled.is_set():await asyncio.sleep(.005)
@@ -159,6 +178,7 @@ class KiloBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.bridge.active)
 
     async def test_shutdown_does_not_swallow_unrelated_policy_failure(self):
+        """Verify shutdown does not swallow unrelated policy failure."""
         self.bridge.active='c'*32
         try:
             with patch.object(self.bridge,'cancel',side_effect=HTTPException(403,'Fixture denial')):
@@ -169,6 +189,7 @@ class KiloBridgeTests(unittest.IsolatedAsyncioTestCase):
 
 class KiloOutputTests(unittest.TestCase):
     def test_only_finished_non_error_draft_is_accepted(self):
+        """Verify only finished non error draft is accepted."""
         rows=[{'type':'text','part':{'text':'A proposed workflow draft.'},'sessionID':'fixture'},
               {'type':'step_finish','part':{'reason':'stop'}}]
         raw='\n'.join(json.dumps(row) for row in rows).encode()
@@ -178,6 +199,7 @@ class KiloOutputTests(unittest.TestCase):
             with self.assertRaises(ValueError):module.parse_events(bad)
 
     def test_config_rejects_cloud_or_tool_policy_changes_and_wrong_types(self):
+        """Verify config rejects cloud or tool policy changes and wrong types."""
         good={'model':module.MODEL,'small_model':module.MODEL,'enabled_providers':['ollama'],
               'permission':{'*':'deny'},'share':'disabled','autoupdate':False,'plugin':[],'mcp':{},
               'provider':{'ollama':{'npm':'@ai-sdk/openai-compatible','options':{'baseURL':'http://127.0.0.1:11434/v1'},
@@ -190,6 +212,7 @@ class KiloOutputTests(unittest.TestCase):
         self.assertFalse(module.valid_config(altered))
 
     def test_cli_missing_ids_fail_before_opening_real_database(self):
+        """Verify cli missing ids fail before opening real database."""
         for action,flag in (('prepare','--task-id'),('run','--job-id')):
             with self.subTest(action=action),patch.object(sys,'argv',['kilo_bridge.py',action]), \
                  patch.object(sys,'stderr',new_callable=io.StringIO) as error,patch.object(module,'KiloBridge') as bridge:

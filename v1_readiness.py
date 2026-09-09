@@ -49,8 +49,11 @@ RECEIPTS={key:name for key,name in (
  ('desktop','desktop-execution-verification.json'),('coderabbit','code-review.json'),
  ('ollama','qwen-lightweight-verification.json'))}
 
-def now(): return datetime.now(timezone.utc).isoformat()
+def now():
+    """Return the current UTC timestamp."""
+    return datetime.now(timezone.utc).isoformat()
 def read_json(path,limit=131072):
+    """Read json."""
     try:
         path=Path(path)
         if path.is_symlink() or path.stat().st_size>limit: return {}
@@ -59,12 +62,17 @@ def read_json(path,limit=131072):
     except (OSError,ValueError,TypeError): return {}
 
 def date_value(value):
+    """Perform the date value operation."""
     if not isinstance(value,str) or len(value)>40: return None
     try: return datetime.fromisoformat(value.replace('Z','+00:00')).isoformat()
     except ValueError: return None
 
-def count(value): return value if type(value) is int and 0<=value<=1_000_000 else None
-def object_value(value): return value if isinstance(value,dict) else {}
+def count(value):
+    """Perform the count operation."""
+    return value if type(value) is int and 0<=value<=1_000_000 else None
+def object_value(value):
+    """Perform the object value operation."""
+    return value if isinstance(value,dict) else {}
 
 def local_adapter_availability(connections):
     """Inspect only fixed local adapter files/config; no process or model is run."""
@@ -88,6 +96,7 @@ def local_adapter_availability(connections):
     return result
 
 def live_connections(private_config=Path('H:/NEXEN/config/private-pc2.json')):
+    """Perform the live connections operation."""
     result={'checked_at':now()}
     for name,port in (('nexen',8788),('ollama',11434),('omniroute',20128),('n8n',5678),('claude_mem',37777)):
         try:
@@ -119,6 +128,7 @@ class ReportBody(BaseModel):
 class Readiness:
     def __init__(self,db,requirements=None,desktop=None,state=STATE,probe=live_connections,
                  adapter_probe=local_adapter_availability):
+        """Initialize the Readiness instance."""
         self.db,self.tracker=db,Tracker(db)
         self.requirements,self.desktop=requirements,desktop
         self.state,self.probe=Path(state),probe
@@ -132,6 +142,7 @@ class Readiness:
                 self.tasks[ident]=self.tracker.create(TaskCreate(text=title,priority='high',next_step=next_step),seed_key=key)
 
     def connection_snapshot(self,refresh=False):
+        """Perform the connection snapshot operation."""
         with self.lock:
             generation=self.cache_generation
             if not refresh and self.cache and time.monotonic()-self.cached_at<=30:
@@ -155,6 +166,7 @@ class Readiness:
             return dict(self.cache)
 
     def packet(self,refresh=False):
+        """Perform the packet operation."""
         connections=self.connection_snapshot(refresh)
         try: available_adapters=self.adapter_probe(connections)
         except Exception: available_adapters={}
@@ -293,6 +305,7 @@ class Readiness:
             coverage='Connection reachability is checked locally. Capability checks use dated receipts and saved state; missing evidence remains unverified.')
 
     def report(self,ident,body):
+        """Perform the report operation."""
         if ident not in self.tasks: raise HTTPException(404,'No setup task for this item.')
         outcome=body.outcome.strip()
         if body.completed and not outcome: raise HTTPException(422,'Briefly describe the setup step you completed. Do not enter a key or password.')
@@ -303,19 +316,24 @@ class Readiness:
         return dict(changed=True,task_id=task['id'],task_status=status,verification_changed=False,execution_unlocked=False)
 
 def register(app,db):
+    """Register the runtime routes and lifecycle hooks."""
     from pc_control import validate_request
     readiness=Readiness(db,getattr(app.state,'requirements',None),getattr(app.state,'desktop_adapter',None))
     @app.get('/readiness',response_class=HTMLResponse)
     def page(request:Request):
+        """Serve the requested application page."""
         validate_request(request)
         return (BASE/'v1-readiness.html').read_text(encoding='utf-8')
     @app.get('/api/readiness')
     def status(request:Request):
+        """Return the current runtime status."""
         validate_request(request);return readiness.packet()
     @app.post('/api/readiness/refresh')
     def refresh(request:Request):
+        """Perform the refresh operation."""
         validate_request(request,mutation=True);return readiness.packet(refresh=True)
     @app.post('/api/readiness/{ident}/report')
     def report(ident:str,body:ReportBody,request:Request):
+        """Perform the report operation."""
         validate_request(request,mutation=True);return readiness.report(ident,body)
     return readiness
