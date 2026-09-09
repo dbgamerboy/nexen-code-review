@@ -4,9 +4,24 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 from memory_bridge import SharedMemory
+from memory_runtime import prompt_with_context
 
 
 class MemoryRelevanceTests(unittest.TestCase):
+    def test_empty_context_raises_typed_error_before_any_model_request(self):
+        for packet in ({},{'text':''},{'text':None}):
+            with self.subTest(packet=packet):
+                with self.assertRaisesRegex(ValueError,'Shared memory returned no context. Check the memory index.'):
+                    prompt_with_context('Current fixture request',packet)
+
+    def test_nonempty_context_preserves_evidence_and_current_request(self):
+        text='SOURCE fixture:7\nOriginal evidence with exact text.'
+        request='Implement the current Windows task.'
+        result=prompt_with_context(request,{'text':text})
+        self.assertIn('NEXEN SHARED CONTEXT\n'+text+'\nEND SHARED CONTEXT',result)
+        self.assertTrue(result.endswith('CURRENT REQUEST\n'+request))
+        self.assertLess(result.index(text),result.index(request))
+
     def test_legacy_dependency_text_does_not_replace_original_plans(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);db=root/'knowledge.sqlite3'

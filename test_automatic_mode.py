@@ -56,6 +56,16 @@ class ModeTests(unittest.TestCase):
         self.assertFalse(s['money_limits']['spending_enabled'])
         self.assertEqual(s['money_limits']['total_cap_cents'], 5000)
 
+    def test_goal_vocabulary_matches_catalog_and_unknown_stored_goal_is_tolerated(self):
+        for goal in am.GOALS:
+            self.assertEqual(am.ModeBody(enabled=True, goal=goal).goal, goal)
+        with self.db.connect() as c:
+            c.execute("UPDATE automatic_mode_state SET goal='retired-goal'")
+        result = self.mode.status(self.requirements)
+        self.assertEqual(result['primary_blockers'], [])
+        self.assertEqual(result['goal'], 'retired-goal')
+        self.assertFalse(result['money_limits']['spending_enabled'])
+
     def test_migration_failed_unverified_and_partial_state_never_resume(self):
         called = []
         p = self.opts['migration_state']

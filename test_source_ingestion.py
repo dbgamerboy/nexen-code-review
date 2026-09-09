@@ -9,12 +9,14 @@ from nexen import DB
 from source_ingestion import SourceIngestion
 from memory_bridge import SharedMemory
 
-ROOT=Path('F:/NEXEN_GAME/source-ingestion-development/test-fixtures')
-ROOT.mkdir(parents=True,exist_ok=True)
-
 class SourceTests(unittest.TestCase):
     def setUp(self):
-        self.base=Path(tempfile.mkdtemp(dir=ROOT));self.sources=self.base/'originals';self.sources.mkdir()
+        # Source classification excludes cache/work/temp ancestors by design.
+        root=Path(__file__).resolve().parent/'fixtures'/'source-ingestion-tests'
+        root.mkdir(parents=True,exist_ok=True)
+        self.temp=tempfile.TemporaryDirectory(prefix='case-',dir=root)
+        self.addCleanup(self.temp.cleanup)
+        self.base=Path(self.temp.name);self.sources=self.base/'originals';self.sources.mkdir()
         self.census=self.base/'census.sqlite3';self.db=DB(str(self.base/'nexen.db'))
         self.manifest=self.base/'roots.json'
         self.manifest.write_text(json.dumps({'roots':[{'path':str(self.sources),'enabled':True}]}),encoding='utf-8')

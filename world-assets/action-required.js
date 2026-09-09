@@ -30,7 +30,8 @@ if (window.top === window.self || document.getElementById('nexen-required-action
       if(response.status===401){summary.textContent='NEXEN is locked. Sign in to check required steps.';list.replaceChildren();return;}
       if(!response.ok)throw Error('Required-step status is temporarily unavailable.');
       const data=await response.json();if(!Array.isArray(data.pending))throw Error('Required-step status is unavailable.');
-      current=data.pending;heading.textContent='Needs you · '+data.pending_count;summary.textContent='Provider actions stay paused. Status refreshed '+new Date(data.checked_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})+'.';
+      if(data.pending.some(item=>!item||typeof item!=='object'||Array.isArray(item)||typeof item.id!=='string'))throw Error('Required-step records are unavailable.');
+      current=data.pending.map(item=>({...item,state:typeof item.state==='string'&&item.state.trim()?item.state:'status_unavailable'}));heading.textContent='Required actions · '+current.length;summary.textContent='HUMAN = owner step; BLOCKED = service or executor issue. Provider actions stay paused. Status refreshed '+new Date(data.checked_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})+'.';
       const oldFocus=document.activeElement?.dataset?.check;
       list.replaceChildren();
       for(const item of current.slice(0,root.dataset.expanded==='true'?20:3)){
@@ -39,7 +40,10 @@ if (window.top === window.self || document.getElementById('nexen-required-action
         if(/^https?:/.test(item.url)){open.target='_blank';open.rel='noopener noreferrer';}
         const check=el('button',item.check_request?'Check requested':'Request connection check');check.dataset.check=item.id;
         check.onclick=async()=>{check.disabled=true;try{const r=await fetch('/api/action-required/'+encodeURIComponent(item.id)+'/check',{method:'POST',headers:{'X-Nexen-Action':'launch'},credentials:'same-origin',signal:AbortSignal.timeout(8000)});if(!r.ok)throw Error('Could not record the connection check.');const result=await r.json();feedback.textContent=result.message;await refresh();}catch(e){feedback.textContent=e.message;}finally{check.disabled=false;}};
-        actions.append(open,check);card.append(state,title,body,block,actions);
+        const execution=['HUMAN','BLOCKED','AUTOMATABLE'].includes(item.execution_class)?item.execution_class:'BLOCKED';
+        const badge=el('strong',execution,'nra-execution '+execution.toLowerCase()),reason=el('p',item.execution_reason||'Execution readiness has not been classified.','nra-evidence');
+        if(item.execution_next_step)body.textContent=item.execution_next_step;
+        actions.append(open,check);card.append(state,badge,title,reason,body,block,actions);
         if(root.dataset.expanded==='true'){card.append(el('p',item.evidence,'nra-evidence'));}
         list.append(card);
       }

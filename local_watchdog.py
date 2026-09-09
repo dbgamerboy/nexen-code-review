@@ -150,7 +150,7 @@ class Watchdog:
         self.directory.mkdir(parents=True, exist_ok=True)
         self.status_path = self.directory / "status.json"
         self.request, self.listening, self.spawn, self.locked, self.now = request, listening, spawn, locked, now
-        self.log = logger_for("watchdog-" + hashlib.sha1(str(directory).encode()).hexdigest()[:8], self.directory)
+        self.log = logger_for("watchdog-" + hashlib.sha256(str(directory).encode()).hexdigest()[:8], self.directory)
         old = read_json(self.status_path)
         self.launch_history = old.get("launch_history", {"hub": [], "census": []})
         self.last_digest = old.get("last_digest_at_unix", 0)

@@ -22,7 +22,7 @@ GOALS = {'lumipaw': ('amboras', 'ads'), 'local': (), 'walkthrough': ('supercool'
 class ModeBody(BaseModel):
     model_config = ConfigDict(extra='forbid')
     enabled: bool = Field(strict=True)
-    goal: Literal['lumipaw', 'local', 'walkthrough', 'phone', 'pc2'] | None = None
+    goal: Literal[tuple(GOALS)] | None = None
 
 
 class ReminderBody(BaseModel):
@@ -117,7 +117,7 @@ class AutomaticMode:
     def status(self, requirements=None):
         s = self.settings()
         observed = requirements.status() if requirements is not None else {'pending': []}
-        chosen = GOALS[s['goal']]
+        chosen = GOALS.get(s['goal'], ())
         pending = [item for ident in chosen for item in observed.get('pending', []) if item.get('id') == ident and not item.get('verified')]
         fingerprint = hashlib.sha256(json.dumps([(x.get('id'), x.get('state'), x.get('action')) for x in pending], sort_keys=True).encode()).hexdigest()
         gate, alive, busy = self.gate(), bool(self.running()), self.busy

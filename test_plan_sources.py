@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -9,7 +10,8 @@ import app_auth
 import memory_runtime
 import plan_compiler as module
 
-ROOT=Path('F:/NEXEN_GAME/plan-development/test-fixtures');ROOT.mkdir(parents=True,exist_ok=True)
+ROOT = Path(os.environ.get('NEXEN_TEST_PLAN_ROOT', Path(__file__).resolve().parent / 'work' / 'plan-source-tests')).resolve()
+ROOT.mkdir(parents=True, exist_ok=True)
 
 def packet(ident,**extra):
     return {'id':ident,'title':'Fixture '+ident,'prompt':'Reference fixture','status':'prepared','executed':False,'task_ids':[],'citations':[],**extra}
@@ -19,7 +21,11 @@ class DB:
 
 class PlanSourcesTests(unittest.TestCase):
     def setUp(self):
-        self.base=Path(tempfile.mkdtemp(dir=ROOT));self.modules=self.base/'modules';self.sources=self.base/'sources';self.modules.mkdir();self.sources.mkdir()
+        self.temporary = tempfile.TemporaryDirectory(prefix='case-', dir=ROOT)
+        self.base = Path(self.temporary.name).resolve()
+        self.assertTrue(self.base.is_relative_to(ROOT.resolve()))
+        self.addCleanup(self.temporary.cleanup)
+        self.modules=self.base/'modules';self.sources=self.base/'sources';self.modules.mkdir();self.sources.mkdir()
         self.report=self.base/'report.md';self.report.write_text('Source report <script>do not execute</script>',encoding='utf-8')
     def save(self,folder,ident,**extra):
         p=folder/(ident+'.json');p.write_text(json.dumps(packet(ident,**extra)),encoding='utf-8');return p

@@ -102,16 +102,25 @@ class CensusTest(unittest.TestCase):
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=flags)
         try:
             deadline = time.monotonic() + 10
+            path = self.state / "status.json"
+            paused = False
+            observed_status = None
             while time.monotonic() < deadline:
-                path = self.state / "status.json"
-                if path.exists() and json.loads(path.read_text())["status"] == "paused":
+                try:
+                    observed_status = json.loads(path.read_text())
+                except (OSError, ValueError):
+                    # Windows may briefly deny reads while the worker replaces its status file.
+                    observed_status = None
+                if isinstance(observed_status, dict) and observed_status.get("status") == "paused":
+                    paused = True
                     break
                 time.sleep(.1)
             if process.poll() is not None:
                 _, error = process.communicate(timeout=10)
                 self.fail('Paused worker exited: ' + error.decode('utf-8', 'replace'))
-            self.assertEqual(json.loads(path.read_text())["status"], "paused")
-            self.assertEqual(json.loads(path.read_text())["files_count"], 0)
+            self.assertTrue(paused, 'Census did not report paused within the 10-second deadline')
+            self.assertEqual(observed_status["status"], "paused")
+            self.assertEqual(observed_status["files_count"], 0)
             with self.assertRaises(RuntimeError):
                 with SingleWriter(self.state):
                     pass

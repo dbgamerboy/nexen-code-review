@@ -123,9 +123,13 @@ class Engine:
               VALUES(?,?,?,?,?,?,?)''', (body.title, body.category, body.status, body.evidence, body.next_step, now(), now())).lastrowid
 
     def update(self, opportunity_id, body):
+        # PATCH omission preserves saved notes; an explicitly supplied empty
+        # string still clears that field. Column names are code-owned.
+        fields = [name for name in ('status', 'evidence', 'next_step') if name in body.model_fields_set]
+        assignments = ','.join(name+'=?' for name in fields)
         with self.db.connect() as c:
-            cur = c.execute('UPDATE money_opportunities SET status=?,evidence=?,next_step=?,updated_at=? WHERE id=?',
-                            (body.status, body.evidence, body.next_step, now(), opportunity_id))
+            cur = c.execute('UPDATE money_opportunities SET '+assignments+',updated_at=? WHERE id=?',
+                            (*[getattr(body, name) for name in fields], now(), opportunity_id))
             if not cur.rowcount:
                 raise HTTPException(404, 'Opportunity not found')
 
@@ -189,5 +193,8 @@ def register(app, db):
         validate_request(request, mutation=True)
         engine.update(opportunity_id, body)
         return {'opportunities': engine.opportunities()}
+
+    from money_workspace import register as register_workspace
+    register_workspace(app, db, engine)
 
     return engine

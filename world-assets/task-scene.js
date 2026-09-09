@@ -1,11 +1,20 @@
 // Model output selects only these authored scene primitives. No generated code or asset URLs.
 export const SCENES=Object.freeze({cleaning:'sweep',coding:'type',music:'mix',planning:'review',rest:'pause'});
+export async function taskSceneAPI(path,body){
+  const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),10000);
+  try{
+    const r=await fetch(path,{method:body===undefined?'GET':'POST',credentials:'same-origin',cache:'no-store',signal:controller.signal,...(body===undefined?{}:{headers:{'Content-Type':'application/json','X-Nexen-Action':'launch'},body:JSON.stringify(body)})});
+    if(r.status===401||(r.url&&new URL(r.url).pathname==='/login')){const error=Error('NEXEN is locked. Sign in to refresh the scene.');error.code='NEXEN_LOCKED';throw error;}
+    if(!r.ok){let detail;try{if(r.headers.get('content-type')?.includes('json'))detail=(await r.json()).detail;}catch{}throw Error(typeof detail==='string'?detail:'Local scene service unavailable ('+r.status+').');}
+    try{return await r.json();}catch{throw Error('Local scene service returned an unreadable response. Refresh when NEXEN is ready.');}
+  }finally{clearTimeout(timeout);}
+}
 export function validatedScene(receipt,taskId){
   if(!Number.isSafeInteger(taskId)||taskId<1||!receipt||receipt.task_id!==taskId||!/^[a-f0-9]{32}$/.test(receipt.id)||receipt.status!=='ready'||receipt.executed!==false||receipt.xp_awarded!==0||receipt.routing!=='local_only'||receipt.reconstruction!==false)throw Error('Scene receipt is not ready for this task.');
   const p=receipt.scene;
   if(!p||!Object.hasOwn(SCENES,p.scene)||SCENES[p.scene]!==p.action||typeof p.grounded_summary!=='string'||!p.grounded_summary.trim()||p.grounded_summary.length>600||!Array.isArray(p.source_refs)||p.source_refs.length<1||p.source_refs.length>24)throw Error('Scene plan failed the visual contract.');
   if(Object.keys(p).some(key=>!['scene','action','grounded_summary','source_refs'].includes(key)))throw Error('Extra scene instructions are not accepted.');
-  const refs=new Set((Array.isArray(receipt.provenance)?receipt.provenance:[]).map(p=>p.source_ref));
+  const refs=new Set((Array.isArray(receipt.provenance)?receipt.provenance:[]).map(source=>source.source_ref));
   if(!p.source_refs.includes('task:'+taskId)||p.source_refs.some(ref=>!refs.has(ref)))throw Error('Scene sources do not match this task.');
   return {scene:p.scene,action:p.action,grounded_summary:p.grounded_summary,receipt_id:receipt.id,task_id:taskId,case_id:receipt.case_id,executed:false};
 }
@@ -20,7 +29,7 @@ export function mountTaskScene(root,intent,onScene,onStop=()=>{}){
   const saved=document.createElement('button');saved.type='button';saved.textContent='Load latest saved scene';q('.task-scene-controls').append(saved);
   let id=null,pending=false,disposed=false,timer=null,epoch=0,startedAt=0;
   const setStatus=(text,error=false)=>{status.textContent=text;root.dataset.error=String(error);};
-  async function api(path,body){const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),10000);try{const r=await fetch(path,{method:body===undefined?'GET':'POST',credentials:'same-origin',cache:'no-store',signal:controller.signal,...(body===undefined?{}:{headers:{'Content-Type':'application/json','X-Nexen-Action':'launch'},body:JSON.stringify(body)})});const d=await r.json();if(!r.ok)throw Error(typeof d.detail==='string'?d.detail:'Local scene service unavailable ('+r.status+').');return d;}finally{clearTimeout(timeout);}}
+  const api=taskSceneAPI;
   function render(receipt){
     id=receipt.id;q('[data-scene-receipt]').textContent='Receipt '+id+' · task #'+intent.task_id+(receipt.case_id?' · photo case #'+receipt.case_id:'');
     q('[data-scene-sources]').replaceChildren(...(receipt.provenance||[]).map(source=>{const p=document.createElement('p');p.textContent=source.source_ref+' · '+source.kind+(source.original_sha256?' · SHA-256 '+source.original_sha256:'');return p;}));
@@ -33,7 +42,7 @@ export function mountTaskScene(root,intent,onScene,onStop=()=>{}){
     if(Date.now()-startedAt>150000){pending=false;start.disabled=false;setStatus('Scene status is no longer being polled. Check the receipt before starting another request.',true);return;}
     if(document.hidden){timer=setTimeout(()=>poll(run),2000);return;}
     try{const receipt=await api('/api/task-scenes/'+id);if(disposed||run!==epoch)return;if(!render(receipt))return;}
-    catch(error){if(disposed||run!==epoch)return;setStatus('Scene status could not refresh. Last receipt retained; no animation inferred.',true);}
+    catch(error){if(disposed||run!==epoch)return;if(error.code==='NEXEN_LOCKED'){pending=false;start.disabled=true;setStatus(error.message,true);return;}setStatus('Scene status could not refresh. Last receipt retained; no animation inferred.',true);}
     timer=setTimeout(()=>poll(run),1800);
   }
   async function generate(){

@@ -260,12 +260,18 @@ def context(project, query='', root=ROOT):
         try:
             from memory_runtime import context_for
             pool = {'nexen': 'engineering', 'wdr': 'game', 'lumipaw': 'commerce', 'music': 'music', 'life': 'life'}[project]
-            packet['knowledge'] = context_for(query, task_type='agentic_os', pool=pool)
+            packet['knowledge'] = context_for(query, task_type='code', pool=pool)
         except Exception as exc:
             packet['knowledge'] = {'status': 'unavailable', 'error_type': type(exc).__name__}
     else:
         packet['knowledge'] = {'status': 'query_required', 'detail': 'Specify a task to retrieve relevant knowledge.'}
     return packet
+
+
+def receipt_path(name):
+    """Locate a fixed verification receipt without replacing general Path behavior."""
+    names={'claude_mem':'claude-mem-install.json','memsearch':'memsearch-install.json'}
+    return Path('H:/NEXEN/state') / names[name]
 
 
 def doctor(root=ROOT, live=True):
@@ -286,8 +292,8 @@ def doctor(root=ROOT, live=True):
         check(name, not missing, 'Files present; execution is checked separately.' if not missing else 'Missing: ' + ', '.join(missing))
     check('native_session_hook', False, 'CLI context works on explicit invocation. Actual harness hook acceptance must be verified.')
     check('remote_access', False, 'Phone TLS and channel login require live verification; no public server is provisioned.')
-    for name, path in [('claude_mem', Path('H:/NEXEN/state/claude-mem-install.json')),
-                       ('memsearch', Path('H:/NEXEN/state/memsearch-install.json'))]:
+    for name in ('claude_mem','memsearch'):
+        path=receipt_path(name)
         receipt = None
         try:
             if path.stat().st_size < 65536:

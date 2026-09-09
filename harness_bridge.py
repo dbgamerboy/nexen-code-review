@@ -45,7 +45,7 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def local_request(url, payload=None, timeout=8, max_bytes=2_000_000):
+def local_request(url, payload=None, timeout=8, max_bytes=2_000_000, require_object=False):
     """No proxy, redirect, remote hostname, credentials, or streamed tool calls."""
     parsed = urlparse(url)
     if parsed.scheme != 'http' or parsed.hostname not in ('127.0.0.1', 'localhost', '::1') or parsed.username or parsed.password:
@@ -58,8 +58,19 @@ def local_request(url, payload=None, timeout=8, max_bytes=2_000_000):
         if len(raw) > max_bytes:
             raise ValueError('Local response exceeded the configured size bound')
         content_type = response.headers.get('Content-Type', '')
+        data = json.loads(raw) if 'json' in content_type else raw.decode('utf-8', errors='replace')
+        if require_object and not isinstance(data, dict):
+            raise ValueError('Local endpoint must return a JSON object')
         return {'status': response.status, 'content_type': content_type,
-                'data': json.loads(raw) if 'json' in content_type else raw.decode('utf-8', errors='replace')}
+                'data': data}
+
+
+def model_entries(data):
+    """Validate the model-list container and skip malformed individual records."""
+    if not isinstance(data, dict) or not isinstance(data.get('models', []), list):
+        raise ValueError('Local endpoint must return a model list')
+    return [item for item in data.get('models', [])
+            if isinstance(item, dict) and isinstance(item.get('name'), str) and item['name'].strip()]
 
 
 def classify_failure(status=None, timed_out=False, started=False):
@@ -113,7 +124,9 @@ class HarnessBridge:
             return {}
         try:
             data = json.loads(path.read_text(encoding='utf-8-sig'))
-            return {p['id']: p for p in data.get('harnesses', []) if p.get('id') in PROVIDERS}
+            if not isinstance(data, dict) or not isinstance(data.get('harnesses', []), list):
+                return {}
+            return {p['id']: p for p in data.get('harnesses', []) if isinstance(p, dict) and p.get('id') in PROVIDERS}
         except (OSError, ValueError, KeyError):
             return {}
 
@@ -139,7 +152,7 @@ class HarnessBridge:
                 timeout=15, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             if provider == 'claude':
                 data = json.loads(result.stdout)
-                ok = result.returncode == 0 and data.get('loggedIn') is True and data.get('authMethod') == 'claude.ai'
+                ok = result.returncode == 0 and isinstance(data, dict) and data.get('loggedIn') is True and data.get('authMethod') == 'claude.ai'
             else:
                 ok = result.returncode == 0 and 'Logged in using ChatGPT' in result.stdout+result.stderr
             report = {'verified': ok, 'method': 'subscription' if ok else 'unverified', 'checked_at': utcnow()}
@@ -167,8 +180,8 @@ class HarnessBridge:
                 item.update(endpoint='http://127.0.0.1:11434', installed=None, readiness='not_probed', models=[])
                 if probe_local:
                     try:
-                        data=local_request(item['endpoint']+'/api/tags', timeout=5)['data']
-                        item.update(readiness='local_endpoint_ready', models=[{'name': m['name'], 'size': m.get('size')} for m in data.get('models',[]) if isinstance(m.get('name'),str)], text_generation_enabled=True)
+                        data=local_request(item['endpoint']+'/api/tags', timeout=5, require_object=True)['data']
+                        item.update(readiness='local_endpoint_ready', models=[{'name': m['name'], 'size': m.get('size')} for m in model_entries(data)], text_generation_enabled=True)
                     except (OSError, ValueError, URLError):
                         item.update(readiness='unavailable', text_generation_enabled=False)
             if name == 'omniroute':
@@ -254,16 +267,17 @@ class HarnessBridge:
             raise ValueError('Select an exact installed model')
         timeout=max(5,min(float(timeout),90));max_tokens=max(16,min(int(max_tokens),1024))
         try:
-            tags=local_request('http://127.0.0.1:11434/api/tags',timeout=5)['data']
+            tags=local_request('http://127.0.0.1:11434/api/tags',timeout=5,require_object=True)['data']
+            installed = {m['name'] for m in model_entries(tags)}
         except (OSError, ValueError, URLError):
             return {'status':'not_started','reason':'local_endpoint_unavailable','attempts':0}
-        if model not in {m.get('name') for m in tags.get('models',[])}:
+        if model not in installed:
             return {'status':'not_started','reason':'model_not_installed','attempts':0}
         request={'model':model,'prompt':prompt,'stream':False,'keep_alive':'2m',
                  'options':{'num_predict':max_tokens,'num_ctx':8192,'temperature':.2}}
         started=time.monotonic()
         try:
-            result=local_request('http://127.0.0.1:11434/api/generate',request,timeout=timeout)['data']
+            result=local_request('http://127.0.0.1:11434/api/generate',request,timeout=timeout,require_object=True)['data']
             answer=result.get('response','')
             if not isinstance(answer,str):answer=''
             return {'status':'completed' if answer.strip() else 'empty_response', 'answer':answer,
@@ -271,6 +285,9 @@ class HarnessBridge:
                     'output_tokens':result.get('eval_count'),'elapsed_seconds':round(time.monotonic()-started,2)}
         except HTTPError as error:
             return {'status':'failed','reason':classify_failure(error.code),'http_status':error.code,'attempts':1,'automatic_retry':False}
+        except ValueError:
+            return {'status':'failed','reason':'invalid_local_response','attempts':1,'automatic_retry':False,
+                    'elapsed_seconds':round(time.monotonic()-started,2)}
         except (TimeoutError, URLError, OSError):
             # The request may have reached the model. Never silently replay it.
             return {'status':'uncertain','reason':'uncertain_timeout_or_connection','attempts':1,'automatic_retry':False,

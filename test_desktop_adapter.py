@@ -67,6 +67,13 @@ class DesktopTests(unittest.TestCase):
         token=self.a.arm()['token'];point=self.a.window()['test_point'];self.a.act('click',self.point(token))
         self.assertEqual(self.native.clicks,[(point['x'],point['y'])])
 
+    def test_non_ascii_session_token_is_denied_without_mouse_move(self):
+        self.a.arm()
+        with self.assertRaises(HTTPException) as error:
+            self.a.act('move', self.point('\u00e9' * 43))
+        self.assertEqual(error.exception.status_code, 409)
+        self.assertEqual(self.native.moves, [])
+
     def test_password_other_process_or_window_denied(self):
         for update in ({'title':'NEXEN — Secure access'}, {'title':d.TITLE+' - Password'}, {'executable':r'C:\malicious\chrome.exe'}):
             old=copy.deepcopy(self.native.w);self.native.w.update(update)

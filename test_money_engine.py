@@ -93,6 +93,26 @@ class MoneyTests(unittest.TestCase):
         self.assertEqual(x['budget']['total_cap_cents'], 5000)
         self.assertFalse(x['budget']['automatically_restarts'])
 
+    def test_status_only_patch_preserves_notes_and_explicit_empty_clears(self):
+        ident = self.engine.create(OpportunityCreate(title='Existing offer', evidence='Supplier quote', next_step='Check delivery'))
+        async def exercise():
+            app = FastAPI()
+            register(app, self.db)
+            transport = httpx.ASGITransport(app=app, client=('127.0.0.1', 51000))
+            headers = {'Origin':'http://127.0.0.1:8788', 'X-Nexen-Action':'launch'}
+            async with httpx.AsyncClient(transport=transport, base_url='http://127.0.0.1:8788') as client:
+                response = await client.patch(f'/api/money/opportunities/{ident}', json={'status':'active'}, headers=headers)
+                self.assertEqual(response.status_code, 200)
+                saved = next(x for x in response.json()['opportunities'] if x['id'] == ident)
+                self.assertEqual(saved['evidence'], 'Supplier quote')
+                self.assertEqual(saved['next_step'], 'Check delivery')
+                response = await client.patch(f'/api/money/opportunities/{ident}', json={'status':'blocked','evidence':''}, headers=headers)
+                saved = next(x for x in response.json()['opportunities'] if x['id'] == ident)
+                self.assertEqual(saved['evidence'], '')
+                self.assertEqual(saved['next_step'], 'Check delivery')
+                self.assertEqual((await client.patch(f'/api/money/opportunities/{ident}', json={'status':'active','next_step':None}, headers=headers)).status_code, 422)
+        asyncio.run(exercise())
+
     def test_routes_validate_origin_and_serve_real_state(self):
         async def exercise():
             app = FastAPI()

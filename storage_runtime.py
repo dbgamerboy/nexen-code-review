@@ -38,7 +38,11 @@ def read_migration(path=None):
     unavailable = {'available': False, 'status': 'not_reported',
                    'detail': 'No migration journal is available yet. Transfer state is unconfirmed.',
                    'copy_percent': None, 'verification_percent': None,
-                   'reported_complete': False, 'counts_complete': False, 'warnings': []}
+                   'reported_complete': False, 'counts_complete': False, 'warnings': [],
+                   'source': None, 'destination': None, 'current_file': None,
+                   'started_at': None, 'finished_at': None, 'error': None,
+                   'total_bytes': None, 'copied_bytes': None, 'verified_files': None,
+                   'total_files': None, 'model_readiness': None}
     try:
         info = journal.lstat()
         if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400 or not stat.S_ISREG(info.st_mode):

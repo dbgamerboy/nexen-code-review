@@ -16,6 +16,9 @@ INDEX = BASE/'data/wdr-lookbook/index.json'
 MAX_IMAGE_BYTES = 32 * 1024 * 1024
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.jfif', '.webp', '.gif', '.bmp', '.avif', '.heic', '.heif', '.tif', '.tiff', '.svg'}
 ID = re.compile(r'^[a-f0-9]{64}$')
+COUNT_FIELDS = ('regular_files','image_files','skipped_links','unreadable','oversize',
+                'unique_assets','duplicate_copies','visually_reviewed','pending_visual_review','previewable')
+PREVIEW_MIMES = ('image/png','image/jpeg','image/gif','image/webp')
 
 
 def is_link(info):
@@ -53,10 +56,45 @@ def image_type(head):
 def load_index(path=INDEX):
     try:
         value = json.loads(Path(path).read_text(encoding='utf-8'))
-        if not isinstance(value, dict) or not isinstance(value.get('assets'), list): raise ValueError('Invalid index')
+        validate_index(value)
         return value
     except (OSError, ValueError) as exc:
         raise HTTPException(503, 'The local lookbook catalogue is not available yet.') from exc
+
+
+def validate_index(value):
+    """Validate the complete read contract without repairing or discarding provenance."""
+    def require(condition):
+        if not condition: raise ValueError('Invalid catalogue structure')
+    def number(value): return type(value) is int and value >= 0
+    def text(value): return isinstance(value,str)
+    def relative(value):
+        return (text(value) and bool(value) and not any(c in value for c in ('\\',':','\x00'))
+                and all(part not in ('','.','..') for part in value.split('/')))
+    require(isinstance(value,dict))
+    require(type(value.get('schema')) is int and value['schema'] == 1)
+    require(all(text(value.get(key)) and bool(value[key]) for key in ('indexed_at','source_label','scope')))
+    require(isinstance(value.get('counts'),dict))
+    require(all(number(value['counts'].get(key)) for key in COUNT_FIELDS))
+    require(isinstance(value.get('assets'),list))
+    seen=set()
+    for asset in value['assets']:
+        require(isinstance(asset,dict))
+        require(text(asset.get('id')) and bool(ID.fullmatch(asset['id'])))
+        require(asset['id'] not in seen and asset.get('sha256') == asset['id'])
+        seen.add(asset['id'])
+        require(all(text(asset.get(key)) for key in ('title','caption','role')))
+        require(number(asset.get('bytes')) and asset['bytes'] <= MAX_IMAGE_BYTES)
+        require('mime' in asset and (asset['mime'] is None or asset['mime'] in PREVIEW_MIMES))
+        require(asset.get('review_status') in ('visually_reviewed','pending_visual_review'))
+        require('reviewed_at' in asset and (asset['reviewed_at'] is None or text(asset['reviewed_at'])))
+        require(isinstance(asset.get('tags'),list) and all(text(tag) for tag in asset['tags']))
+        require(isinstance(asset.get('sources'),list) and bool(asset['sources']))
+        for source in asset['sources']:
+            require(isinstance(source,dict))
+            require(relative(source.get('relative_path')) and text(source.get('filename')) and bool(source['filename']))
+            require(number(source.get('bytes')) and source['bytes'] <= MAX_IMAGE_BYTES)
+            require(type(source.get('modified_ns')) is int)
 
 
 def build_catalog(root=SOURCE_ROOT, index_path=INDEX, observations=None):

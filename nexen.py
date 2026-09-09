@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import json
+import logging
+import math
 import os
 import re
 import shutil
@@ -23,6 +26,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from pypdf import PdfReader
 from text_utils import chunk_text, utcnow
+from app_lifecycle import lifespan, register_lifecycle
 
 BASE = Path(__file__).resolve().parent
 
@@ -277,7 +281,7 @@ class Ingestor:
             r = c.execute("SELECT size_bytes,mtime FROM files WHERE path=?", (str(p),)).fetchone()
             return bool(r and r["size_bytes"] == st.st_size and abs(r["mtime"] - st.st_mtime) < .0001)
 
-    def scan(self):
+    def scan(self, stop_requested=None):
         stats = dict(seen=0, indexed=0, unchanged=0, skipped=0, errors=0)
         for root_s in self.cfg["ingestion"]["roots"]:
             root = Path(root_s)
@@ -285,6 +289,9 @@ class Ingestor:
                 self.db.event("scan_root_missing", f"Missing root: {root}", "WARNING")
                 continue
             for p in root.rglob("*"):
+                if stop_requested is not None and stop_requested():
+                    self.db.event('scan_interrupted', 'Filesystem scan stopped with the application', data=stats)
+                    return stats
                 try:
                     if not p.is_file():
                         continue
@@ -337,9 +344,33 @@ class Ingestor:
             self.db.enqueue("analyze_file", {"file_id": fid}, 2)
 
 
+class MemoryContextError(RuntimeError):
+    """Shared context failed before a provider request could be sent."""
+
+
 class ModelRouter:
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg: dict, event=None):
         self.cfg = cfg
+        self.event = event
+
+    def _failure(self, provider: str, error: Exception) -> None:
+        # Provider exceptions can contain request URLs, keys and private prompts.
+        # Persist only code-owned provider names, error types and numeric status.
+        data = {'provider': provider, 'error_class': type(error).__name__}
+        status = getattr(error, 'status_code', None)
+        if status is None:
+            status = getattr(getattr(error, 'response', None), 'status_code', None)
+        if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
+            data['http_status'] = status
+        message = provider+' request failed ('+data['error_class']+')'
+        try:
+            if self.event is not None:
+                self.event('model_context_failure' if provider == 'memory' else 'model_provider_failure',
+                           message, 'WARNING', data=data)
+            else:
+                logging.getLogger(__name__).warning('%s', message)
+        except Exception:
+            logging.getLogger(__name__).warning('Unable to record a %s failure event', provider)
 
     @staticmethod
     def parse_json(text: str | None):
@@ -372,7 +403,8 @@ class ModelRouter:
             )
             r.raise_for_status()
             return r.json().get("response")
-        except Exception:
+        except Exception as error:
+            self._failure('ollama', error)
             return None
 
     def openai(self, prompt: str, hard=False):
@@ -383,7 +415,8 @@ class ModelRouter:
             client = OpenAI()
             m = self.cfg["models"]["openai"]["model_hard" if hard else "model_fast"]
             return client.responses.create(model=m, input=prompt).output_text
-        except Exception:
+        except Exception as error:
+            self._failure('openai', error)
             return None
 
     def anthropic(self, prompt: str):
@@ -395,12 +428,17 @@ class ModelRouter:
             client = anthropic.Anthropic()
             msg = client.messages.create(model=a["model"], max_tokens=4000, messages=[{"role":"user","content":prompt}])
             return "".join(x.text for x in msg.content if getattr(x, "type", "") == "text")
-        except Exception:
+        except Exception as error:
+            self._failure('anthropic', error)
             return None
 
     def text(self, prompt: str, hard=False):
-        from memory_runtime import enrich_prompt
-        prompt = enrich_prompt(prompt, "workflow" if "workflow" in prompt[:2000].lower() else "code")
+        try:
+            from memory_runtime import enrich_prompt
+            prompt = enrich_prompt(prompt, "workflow" if "workflow" in prompt[:2000].lower() else "code")
+        except Exception as error:
+            self._failure('memory', error)
+            raise MemoryContextError('Shared memory context could not be prepared; no provider request was sent.') from None
         if self.cfg["models"].get("local_first", True):
             x = self.ollama(prompt)
             if x:
@@ -474,7 +512,12 @@ class Analyzer:
                 body = str(item.get("body", ""))[:5000]
                 if not body:
                     continue
-                conf = float(item.get("confidence", .5) or .5)
+                raw_confidence = item.get("confidence")
+                try:
+                    conf = float(raw_confidence) if not isinstance(raw_confidence, bool) else .5
+                except (TypeError, ValueError, OverflowError):
+                    conf = .5
+                conf = min(1.0, max(0.0, conf)) if math.isfinite(conf) else .5
                 c.execute("INSERT INTO knowledge_items(source_file_id,kind,title,body,confidence,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", (file_id,kind,title,body,conf,now,now))
                 if kind == "GOAL":
                     c.execute("INSERT INTO goals(title,body,source_file_id,created_at,updated_at) VALUES(?,?,?,?,?)", (title or body[:120],body,file_id,now,now))
@@ -610,7 +653,14 @@ class Jarvis:
         if events:
             base += "\n\nRECENT EVENTS\n" + "\n".join(f"- [{e['level']}] {e['event_type']}: {e['message']}" for e in events)
         prompt = """You are NEXEN JARVIS. Turn the telemetry below into a concise factual operational brief with sections SYSTEM, RECENT, BLOCKERS, APPROVALS, TODAY'S TOP ACTIONS. Never invent revenue, profit, task completion, or failures. If financial telemetry is absent, say it is not connected yet.\n\n""" + base
-        out = self.router.text(prompt) or (base + "\n\nFinancial telemetry: not connected yet.")
+        try:
+            out = self.router.text(prompt)
+        except MemoryContextError:
+            # The router has already recorded the context failure. Keep the
+            # operational brief factual without submitting ungrounded prompts.
+            self.db.event('jarvis_telemetry_fallback', 'Shared memory context unavailable; report uses local telemetry only.', 'WARNING')
+            out = None
+        out = out or (base + "\n\nFinancial telemetry: not connected yet.")
         day = datetime.now().strftime("%Y-%m-%d")
         with self.db.connect() as c:
             c.execute("INSERT INTO jarvis_reports(report_date,body,created_at) VALUES(?,?,?)", (day,out,utcnow()))
@@ -622,7 +672,7 @@ class Jarvis:
 class Supervisor:
     def __init__(self, db: DB, cfg: dict):
         self.db, self.cfg = db, cfg
-        self.router = ModelRouter(cfg)
+        self.router = ModelRouter(cfg, event=db.event)
         self.ingestor = Ingestor(db,cfg)
         self.analyzer = Analyzer(db,self.router)
         self.tools = ToolFabric(db,cfg)
@@ -631,6 +681,24 @@ class Supervisor:
         self.last_scan = self.last_tools = self.last_compile = None
         self.last_jarvis_day = None
         self.last_source_pass = None
+        self._stop_event = threading.Event()
+        self._thread = None
+
+    def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            raise RuntimeError('The NEXEN supervisor is already running')
+        self._stop_event.clear()
+        self.recover_interrupted()
+        self._thread = threading.Thread(target=self.run, daemon=True, name='nexen-supervisor')
+        self._thread.start()
+
+    async def shutdown(self) -> None:
+        self._stop_event.set()
+        if self._thread is not None:
+            await asyncio.to_thread(self._thread.join, 30)
+            if self._thread.is_alive():
+                raise RuntimeError('The NEXEN supervisor did not stop within 30 seconds')
+            self._thread = None
 
     def recover_interrupted(self):
         # This app owns its analysis queue. A server restart must not strand a
@@ -653,11 +721,13 @@ class Supervisor:
     def drain(self, limit):
         jobs = self.db.rows("SELECT * FROM jobs WHERE status='queued' AND available_at<=? ORDER BY id LIMIT ?", (utcnow(),limit))
         for job in jobs:
-            if (BASE/'data/PAUSE_AUTONOMY').exists():
+            if self._stop_event.is_set() or (BASE/'data/PAUSE_AUTONOMY').exists():
                 break
             jid = job["id"]
             with self.db.connect() as c:
-                c.execute("UPDATE jobs SET status='running',attempts=attempts+1,updated_at=? WHERE id=?", (utcnow(),jid))
+                claimed = c.execute("UPDATE jobs SET status='running',attempts=attempts+1,updated_at=? WHERE id=? AND status='queued' AND available_at<=? AND attempts<max_attempts", (utcnow(),jid,utcnow())).rowcount
+            if claimed != 1:
+                continue
             try:
                 payload = json.loads(job["payload_json"])
                 if job["type"] == "analyze_file":
@@ -677,6 +747,7 @@ class Supervisor:
 
     def tick(self):
         from daily_plan import ensure_day
+        if self._stop_event.is_set():return
         ensure_day(self.db)
         if (BASE/'data/PAUSE_AUTONOMY').exists():
             return
@@ -685,7 +756,7 @@ class Supervisor:
         if hasattr(self,'source_worker') and self.due(self.last_source_pass,5):
             self.source_worker.run_pass()
             self.last_source_pass=now
-            if (BASE/'data/PAUSE_AUTONOMY').exists():return
+            if self._stop_event.is_set() or (BASE/'data/PAUSE_AUTONOMY').exists():return
             # A small backlog gives new source notes a path to ideas without
             # overwhelming interactive Ollama sessions or executing source code.
             pending=self.db.scalar("SELECT count(*) FROM jobs WHERE status IN ('queued','running')") or 0
@@ -697,22 +768,22 @@ class Supervisor:
                     ORDER BY q.updated_at LIMIT ?""",(min(2,5-pending),))
                 for item in candidates:self.db.enqueue('analyze_file',{'file_id':item['file_id']})
         if self.due(self.last_scan, s["scan_interval_minutes"]):
-            self.ingestor.scan(); self.last_scan = now
-        if (BASE/'data/PAUSE_AUTONOMY').exists():return
+            self.ingestor.scan(stop_requested=self._stop_event.is_set); self.last_scan = now
+        if self._stop_event.is_set() or (BASE/'data/PAUSE_AUTONOMY').exists():return
         if self.due(self.last_tools, s["tool_discovery_interval_minutes"]):
             self.tools.discover(); self.last_tools = now
-        if (BASE/'data/PAUSE_AUTONOMY').exists():return
+        if self._stop_event.is_set() or (BASE/'data/PAUSE_AUTONOMY').exists():return
         self.drain(int(s.get("max_jobs_per_tick",3)))
-        if (BASE/'data/PAUSE_AUTONOMY').exists():return
+        if self._stop_event.is_set() or (BASE/'data/PAUSE_AUTONOMY').exists():return
         if self.due(self.last_compile, s["workflow_compile_interval_minutes"]):
             self.factory.compile(25); self.last_compile = now
-        if (BASE/'data/PAUSE_AUTONOMY').exists():return
+        if self._stop_event.is_set() or (BASE/'data/PAUSE_AUTONOMY').exists():return
         if self.jarvis_due(now):
             self.jarvis.build(); self.last_jarvis_day = now.date().isoformat()
 
     def run(self):
         self.db.event("supervisor_start", "NEXEN supervisor started")
-        while True:
+        while not self._stop_event.is_set():
             try:
                 self.tick()
             except KeyboardInterrupt:
@@ -720,27 +791,19 @@ class Supervisor:
                 return
             except Exception as e:
                 self.db.event("supervisor_tick_error", f"{type(e).__name__}: {e}", "ERROR")
-            time.sleep(int(self.cfg["supervisor"].get("loop_seconds",30)))
+            self._stop_event.wait(int(self.cfg["supervisor"].get("loop_seconds",30)))
+        self.db.event('supervisor_stop', 'NEXEN supervisor stopped with the application')
 
 
 cfg = load_config()
 db = DB(cfg["paths"]["database"])
 sup = Supervisor(db,cfg)
-app = FastAPI(title="NEXEN Autonomy")
-_started = False
+app = FastAPI(title="NEXEN Autonomy", lifespan=lifespan)
+register_lifecycle(app, startup=sup.start, shutdown=sup.shutdown)
 
 
 class Decision(BaseModel):
     status: str
-
-
-@app.on_event("startup")
-def startup():
-    global _started
-    if not _started:
-        _started = True
-        sup.recover_interrupted()
-        threading.Thread(target=sup.run, daemon=True, name="nexen-supervisor").start()
 
 
 @app.get("/api/status")

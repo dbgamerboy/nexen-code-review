@@ -8,16 +8,21 @@ from pathlib import Path
 
 from fastapi import HTTPException, Request
 from fastapi.responses import HTMLResponse
+from execution_labels import requirement_class
 
 BASE = Path(__file__).resolve().parent
 CATALOG = (
+    dict(id='browser-home', title='Set NEXEN as your browser startup page', state='setup_required',
+         action='In Chrome, open Settings > On startup > Open a specific page, then add http://127.0.0.1:8788/. Optionally enable the Home button under Appearance with the same address.',
+         url='http://127.0.0.1:8788/', blocks='Open NEXEN automatically when your browser starts',
+         evidence='This browser preference needs a manual owner step; its saved setting has not been verified.', automatic_check=False),
     dict(id='supercool', title='Sign in to Supercool', state='login_required',
          action='Sign in in the Supercool tab. Then request a connection check.',
          url='https://supercool.com/login', blocks='Generate your actual-app walkthrough video',
          evidence='The Supercool tab showed its login form on September 9. No generation has been submitted.', automatic_check=False),
     dict(id='n8n', title='Finish n8n owner setup', state='setup_required',
          action='Create your local owner account, then connect a scoped NEXEN credential.',
-         url='http://127.0.0.1:5678/', blocks='Import and activate connected workflow drafts',
+         url='http://127.0.0.1:5678/', blocks='Run connected business workflows',
          evidence='Local n8n is installed; account and integration readiness are checked separately.', automatic_check=True),
     dict(id='amboras', title='Complete Lumipaw payment onboarding', state='setup_required',
          action='Open Amboras, choose Setup payments, and finish the provider steps as a US individual.',
@@ -58,7 +63,7 @@ def n8n_probe():
             return dict(state='setup_required', evidence='n8n currently reports that initial owner setup is required.')
         if setup is False:
             return dict(state='integration_required', title='Connect n8n to NEXEN',
-                        action='Sign in to n8n and configure a scoped NEXEN credential before importing workflows.',
+                        action='Sign in to n8n and configure a scoped NEXEN credential for connected business workflows.',
                         evidence='Owner setup is no longer requested. An authenticated integration has not been verified.')
         return dict(state='unverified', evidence='n8n responded without a recognized owner-setup indicator.')
     except (OSError, ValueError, AttributeError):
@@ -88,6 +93,7 @@ class Requirements:
             # This module has no authorized provider executor or credential verifier yet.
             item['verified'] = False
             item['executable'] = False
+            item.update(requirement_class(item))
         return dict(checked_at=now(), pending=items, pending_count=len(items),
                     policy='Dependent provider actions stay blocked until authentication, prerequisites and the executor are verified.',
                     coverage='n8n has a bounded local setup probe. Other entries reflect the latest recorded observations; browser logins need a new verification.',
@@ -133,6 +139,6 @@ def register(app, db):
     def run(name: str, request: Request):
         from pc_control import validate_request
         validate_request(request, mutation=True)
-        requirements.require_connection(name)
+        return requirements.require_connection(name)
 
     return requirements

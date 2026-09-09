@@ -9,23 +9,23 @@ from pc_control import validate_request
 import private_access as module
 
 ROOT = Path(__file__).resolve().parent / 'work' / 'private-access-tests'
-ROOT.mkdir(parents=True, exist_ok=True)
 
 
 class PrivateAccessTest(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(dir=ROOT)
+        self.temp = tempfile.TemporaryDirectory(prefix='private-access-')
+        self.addCleanup(self.temp.cleanup)
         self.file = Path(self.temp.name) / 'private.json'
         self.config = {'enabled':True, 'protocol':'https', 'port':443,
             'allowed_host':'PRIVATE_HOST.invalid', 'allowed_origin':'https://PRIVATE_HOST.invalid',
-            'allowed_tailscale_user_login':'LOCAL_EMAIL_REDACTED'}
+            'allowed_tailscale_user_login':'review-b2096dbc5111b630@example.invalid'}
         self.file.write_text(json.dumps(self.config), encoding='utf-8')
         self.patch = patch.object(module, 'CONFIG', self.file)
         self.patch.start()
     def tearDown(self):
         self.patch.stop()
         self.temp.cleanup()
-    def request(self, method='GET', host='PRIVATE_HOST.invalid', identity='LOCAL_EMAIL_REDACTED', origin=None, client='127.0.0.1', extra=()):
+    def request(self, method='GET', host='PRIVATE_HOST.invalid', identity='review-b2096dbc5111b630@example.invalid', origin=None, client='127.0.0.1', extra=()):
         headers = [(b'host', host.encode())]
         if identity is not None: headers.append((b'tailscale-user-login', identity.encode()))
         if origin is not None: headers.append((b'origin', origin.encode()))
@@ -49,11 +49,11 @@ class PrivateAccessTest(unittest.TestCase):
         self.assertNotIn('x-forwarded-for',req.headers)
         validate_request(req,mutation=True)
     def test_bad_identity_origin_peer_and_duplicate_headers_fail_closed(self):
-        bad = [self.request(identity=None), self.request(identity='LOCAL_EMAIL_REDACTED'),
+        bad = [self.request(identity=None), self.request(identity='review-b0431fe807440962@example.invalid'),
             self.request(client='192.0.2.10',extra=[(b'x-forwarded-for',b'127.0.0.1')]),
             self.request(origin='http://PRIVATE_HOST.invalid'),self.request(origin='https://evil.example'),
             self.request('POST'),self.request(extra=[(b'host',b'PRIVATE_HOST.invalid')]),
-            self.request(extra=[(b'tailscale-user-login',b'LOCAL_EMAIL_REDACTED')]),
+            self.request(extra=[(b'tailscale-user-login',b'review-b2096dbc5111b630@example.invalid')]),
             self.request(origin=self.config['allowed_origin'],extra=[(b'origin',self.config['allowed_origin'].encode())]),
             self.request(host='127.0.0.1:8788')]
         for req in bad:
@@ -71,8 +71,8 @@ class PrivateAccessTest(unittest.TestCase):
         self.file.write_text(json.dumps(self.config),encoding='utf-8')
         with self.assertRaises(HTTPException): module.normalize_private_request(self.request())
         summary = json.dumps(module.status())
-        self.assertNotIn('fixture.example',summary)
-        self.assertNotIn('owner@',summary)
+        self.assertNotIn(self.config['allowed_host'],summary)
+        self.assertNotIn(self.config['allowed_tailscale_user_login'],summary)
         self.assertFalse(module.status()['enabled'])
 
 

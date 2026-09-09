@@ -17,7 +17,7 @@ from photo_inbox import PhotoStore
 from task_tracking import TaskCreate
 from test_next_step import DB
 
-ROOT = Path('F:/NEXEN_GAME/case-development/test-fixtures')
+ROOT = Path(__file__).resolve().parent / 'work' / 'problem-case-tests'
 ROOT.mkdir(parents=True, exist_ok=True)
 
 
@@ -68,7 +68,10 @@ class Model:
 class CaseTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         asyncio.get_running_loop().set_debug(False)
-        self.root = Path(tempfile.mkdtemp(dir=ROOT))
+        self.temporary = tempfile.TemporaryDirectory(prefix='case-', dir=ROOT)
+        self.root = Path(self.temporary.name).resolve()
+        self.assertTrue(self.root.is_relative_to(ROOT.resolve()))
+        self.addCleanup(self.temporary.cleanup)
         self.db = DB(self.root/'case.db')
         self.photos = PhotoStore(self.db, self.root/'photos')
         self.model = Model()

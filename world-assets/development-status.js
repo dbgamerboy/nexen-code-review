@@ -1,5 +1,9 @@
 // Visible checkpoints share the backend's actual transfer state, without actions.
-if (!(window.parent !== window && window.parent.location.origin === location.origin)) {
+function hasSameOriginDevelopmentParent(){
+  try{return window.parent!==window&&window.parent.location.origin===location.origin;}
+  catch{return false;}
+}
+if (!hasSameOriginDevelopmentParent()) {
   const host=document.createElement('details');
   host.className='nexen-development';
   host.innerHTML='<summary>Development status <span data-dev-label>Loading…</span></summary><div><p data-dev-detail></p><p data-dev-transfer></p><ul data-dev-steps></ul><small data-dev-time></small><nav><a href="/storage" target="_top">Storage + models</a><a href="/next" target="_top">Next task</a><a href="/connections" target="_top">Needs you</a></nav></div>';

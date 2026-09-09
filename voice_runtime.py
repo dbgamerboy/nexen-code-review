@@ -130,7 +130,8 @@ def register(app,db=None):
             confidence=result.get('confidence')
             command=interpret(text)
             if not text:command=dict(type='unknown',message='No speech was recognized. Try again close to the microphone.')
-            elif isinstance(confidence,(int,float)) and confidence<0.70:
+            elif isinstance(confidence,bool) or not isinstance(confidence,(int,float)) or not 0.70 <= confidence <= 1.0:
+                confidence = None if isinstance(confidence,bool) or not isinstance(confidence,(int,float)) or not 0 <= confidence <= 1 else confidence
                 command=dict(type='unknown',message='Recognition confidence was low. Check the transcript and retry or type the command.')
             return dict(text=text,confidence=confidence,command=command,executed=False,audio_saved=False)
         finally:busy.release()

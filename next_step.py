@@ -24,6 +24,7 @@ WORKSPACES = {
     'photo-vision-jarvis': '/problems', 'photos-life': '/problems',
     'photo-memories': '/problems', 'local-lab': '/lab',
     'music-catalog': '/lab', 'music-releases': '/lab', 'music-social': '/plans',
+    'music-batch-stems': '/music-render',
     'wdr-world': '/game', 'wdr-avatar': '/game', 'wdr-cars': '/game',
     'wdr-factory': '/game', 'wdr-music': '/game', 'wdr-store': '/lookbook',
     'wdr-tv': '/game', 'shared-game-pc-actions': '/game',
@@ -66,7 +67,9 @@ class NextSteps:
         try:
             if path.stat().st_size <= 2*1024*1024:
                 payload = json.loads(path.read_text(encoding='utf-8-sig'))
-                self.seeds = {x['key']: x for x in payload.get('tasks', [])
+                tasks = payload.get('tasks', []) if isinstance(payload, dict) else []
+                tasks = tasks if isinstance(tasks, list) else []
+                self.seeds = {x['key']: x for x in tasks
                               if isinstance(x, dict) and isinstance(x.get('key'), str)}
         except (OSError, ValueError, TypeError):
             pass

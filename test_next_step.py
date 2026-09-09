@@ -13,9 +13,6 @@ import app_auth
 import next_step as module
 from task_tracking import TaskCreate, TaskUpdate
 
-ROOT = Path('F:/NEXEN_GAME/next-development/test-fixtures')
-ROOT.mkdir(parents=True, exist_ok=True)
-
 
 class DB:
     def __init__(self, path):
@@ -54,7 +51,9 @@ class Requirements:
 
 class NextTests(unittest.TestCase):
     def setUp(self):
-        self.folder = Path(tempfile.mkdtemp(dir=ROOT))
+        self.temp = tempfile.TemporaryDirectory(prefix='next-step-')
+        self.addCleanup(self.temp.cleanup)
+        self.folder = Path(self.temp.name)
         self.db = DB(self.folder/'tasks.sqlite')
         self.seeds = self.folder/'seeds.json'
         self.seeds.write_text(json.dumps({'tasks': [{'key': 'rent', 'source': 'User housing request',
@@ -149,6 +148,19 @@ class NextTests(unittest.TestCase):
         with self.assertRaises(ValueError): module.CompletionBody(all=True)
         with self.assertRaises(ValueError): module.SelectionBody(task_id='1')
         self.assertEqual(self.db.scalar('SELECT count(*) FROM task_history'), 0)
+
+    def test_malformed_seed_containers_do_not_prevent_startup_or_change_tasks(self):
+        ident = self.task('rent')
+        for payload in ([], None, 42, 'invalid', {'tasks':None}, {'tasks':{}}, {'tasks':'invalid'}):
+            with self.subTest(payload=payload):
+                self.seeds.write_text(json.dumps(payload), encoding='utf-8')
+                restarted = module.NextSteps(self.db, seeds=self.seeds)
+                self.assertEqual(restarted.seeds, {})
+                self.assertEqual(restarted.task(ident)['provenance']['basis'], 'saved_task_and_history')
+                self.assertEqual(restarted.task(ident)['status'], 'planned')
+        self.seeds.write_text(json.dumps({'tasks':[None, 'bad', {'key':'rent','source':'Preserved source'}]}), encoding='utf-8')
+        restarted = module.NextSteps(self.db, seeds=self.seeds)
+        self.assertEqual(restarted.task(ident)['provenance']['source'], 'Preserved source')
 
     def test_routes_require_auth_and_same_origin_mutation_and_use_live_requirements(self):
         ident = self.task('walkthrough')
