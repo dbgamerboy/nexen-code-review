@@ -5,6 +5,8 @@ import unittest
 from unittest.mock import patch
 
 from harness_bridge import HarnessBridge, local_request
+from test_support import fixture_root
+from storage_policy import require_output_path
 
 
 class Response:
@@ -19,7 +21,11 @@ class Response:
 
 class HarnessContracts(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(dir='F:/NEXEN_GAME/harness-development/temp')
+        # This adapter currently requires an F: root. Create its repository-owned
+        # fixture parent lazily instead of requiring a private preexisting folder.
+        parent = require_output_path(Path(__file__).resolve().parent/'work'/'harness-contract-fixtures')
+        parent.mkdir(parents=True, exist_ok=True)
+        self.temp = tempfile.TemporaryDirectory(dir=parent)
         self.root = Path(self.temp.name)
         self.bridge = HarnessBridge(None, self.root, self.root/'state')
 

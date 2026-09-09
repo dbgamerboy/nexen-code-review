@@ -7,16 +7,19 @@ task_scene) are captured in their original registration order, not run twice.
 """
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import inspect
 from itertools import zip_longest
 from typing import Awaitable, Callable, TYPE_CHECKING
+from fastapi.routing import APIRouter
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
 LifecycleCallback = Callable[[], object | Awaitable[object]]
+DEFAULT_LIFESPAN_TYPE = type(APIRouter().lifespan_context)
 
 
 @dataclass(frozen=True)
@@ -61,7 +64,7 @@ def register_lifecycle(app: FastAPI, *, startup: LifecycleCallback | None = None
     if current is not lifespan:
         # Standalone module tests and small apps may use FastAPI's default
         # lifespan. Never silently replace another application's custom one.
-        if type(current).__name__ != '_DefaultLifespan' or getattr(current, '_router', None) is not app.router:
+        if type(current) is not DEFAULT_LIFESPAN_TYPE:
             raise ValueError('Create the application with app_lifecycle.lifespan before registering NEXEN workers')
         app.router.lifespan_context = lifespan
     registry.capture_legacy(app)
@@ -101,4 +104,8 @@ async def lifespan(app: FastAPI):
     if len(errors) == 1:
         raise errors[0]
     if errors:
+        cancellation = next((error for error in errors if isinstance(error, asyncio.CancelledError)), None)
+        if cancellation is not None:
+            cleanup_errors = [error for error in errors if error is not cancellation]
+            raise cancellation from BaseExceptionGroup('NEXEN lifecycle cleanup failed', cleanup_errors)
         raise BaseExceptionGroup('NEXEN lifecycle failed', errors)

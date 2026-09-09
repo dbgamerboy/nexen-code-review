@@ -97,16 +97,61 @@ def validate_index(value):
             require(type(source.get('modified_ns')) is int)
 
 
+def clean_observation(value):
+    """Preserve only typed manual fields; never reuse stored source paths."""
+    if not isinstance(value, dict):
+        return {}
+    clean = {key:value[key] for key in ('title','caption','role') if isinstance(value.get(key), str)}
+    tags = value.get('tags')
+    if isinstance(tags, list) and all(isinstance(tag, str) for tag in tags):
+        clean['tags'] = list(tags)
+    if 'reviewed_at' in value and (value['reviewed_at'] is None or isinstance(value['reviewed_at'], str)):
+        clean['reviewed_at'] = value['reviewed_at']
+    return clean
+
+
+def recover_observations(index_path):
+    """Recover each reviewed identity even when another catalogue row is bad.
+
+    Page reads remain strict. Rebuilds regenerate file provenance from original
+    bytes and salvage valid manual fields only for matching, unambiguous hashes.
+    """
+    try:
+        path = Path(index_path)
+        if path.stat().st_size > 16*1024*1024:
+            return {}
+        value = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(value, dict) or value.get('schema') != 1 or not isinstance(value.get('assets'), list):
+        return {}
+    observations, seen, ambiguous = {}, set(), set()
+    for asset in value['assets']:
+        if not isinstance(asset, dict):
+            continue
+        ident = asset.get('id')
+        if not isinstance(ident, str) or not ID.fullmatch(ident) or asset.get('sha256') != ident:
+            continue
+        if ident in seen:
+            ambiguous.add(ident)
+        seen.add(ident)
+        if asset.get('review_status') == 'visually_reviewed':
+            clean = clean_observation(asset)
+            if clean:
+                observations[ident] = clean
+    return {ident:fields for ident,fields in observations.items() if ident not in ambiguous}
+
+
 def build_catalog(root=SOURCE_ROOT, index_path=INDEX, observations=None):
     """Explicit local indexing operation; never called while loading the page."""
     root, index_path = Path(root).absolute(), Path(index_path)
     if any(is_link(p.lstat()) for p in (root, *root.parents)):
         raise ValueError('The source root must not pass through a link.')
     if observations is None:
-        try:
-            observations = {a['sha256']: {key:a[key] for key in ('title','caption','tags','role','reviewed_at') if key in a}
-                            for a in load_index(index_path)['assets'] if a.get('review_status') == 'visually_reviewed'}
-        except HTTPException: observations = {}
+        observations = recover_observations(index_path)
+    else:
+        observations = {ident:clean_observation(fields) for ident,fields in observations.items()
+                        if isinstance(ident, str) and ID.fullmatch(ident)} if isinstance(observations, dict) else {}
     records = {}
     counts = {'regular_files': 0, 'image_files': 0, 'skipped_links': 0, 'unreadable': 0, 'oversize': 0}
     stack = [root]
@@ -156,6 +201,7 @@ def build_catalog(root=SOURCE_ROOT, index_path=INDEX, observations=None):
               'counts':{**counts, 'unique_assets':len(assets), 'duplicate_copies':sum(len(a['sources'])-1 for a in assets),
                         'visually_reviewed':reviewed, 'pending_visual_review':len(assets)-reviewed,
                         'previewable':sum(bool(a['mime']) for a in assets)}, 'assets':assets}
+    validate_index(result)
     index_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = index_path.with_suffix('.tmp')
     temporary.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')

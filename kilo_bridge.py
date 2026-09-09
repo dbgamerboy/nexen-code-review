@@ -31,6 +31,7 @@ BINARY=Path('F:/Apps/npm-global/node_modules/@kilocode/cli/node_modules/@kilocod
 MODEL='ollama/dolphin3:latest'
 RUN_LOCK=threading.Lock()
 MAX_OUTPUT=1024*1024
+MAX_RUN_SECONDS=150
 
 def now():return datetime.now(timezone.utc).isoformat()
 def sha(text):return hashlib.sha256(text.encode('utf-8')).hexdigest()
@@ -234,7 +235,7 @@ class KiloBridge:
                                               creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
                 while self.process.poll() is None:
                     if self.cancelled.is_set() or (folder/'cancel.requested').exists():raise InterruptedError('Draft cancelled by the user.')
-                    if time.monotonic()-started>150:raise TimeoutError('The bounded Kilo draft timed out.')
+                    if time.monotonic()-started>MAX_RUN_SECONDS:raise TimeoutError('The bounded Kilo draft timed out.')
                     if max((folder/'events.jsonl').stat().st_size,(folder/'stderr.log').stat().st_size)>MAX_OUTPUT:raise ValueError('Kilo draft output exceeded its limit.')
                     time.sleep(.2)
                 code=self.process.returncode
@@ -266,11 +267,26 @@ class KiloBridge:
         try:
             with SingleWriter(ROOT):
                 for row in self.db.rows("SELECT id FROM kilo_draft_jobs WHERE status='running'"):
-                    receipt=self.get(row['id']);receipt.update(status='interrupted',error='NEXEN restarted during this draft. No automatic retry was made.');self.record(receipt)
+                    try:
+                        receipt=self.get(row['id'])
+                    except HTTPException as error:
+                        if error.status_code not in {404,409}:raise
+                        with self.db.connect() as c:
+                            c.execute("UPDATE kilo_draft_jobs SET status='interrupted' WHERE id=? AND status='running'",(row['id'],))
+                        continue
+                    receipt.update(status='interrupted',error='NEXEN restarted during this draft. No automatic retry was made.');self.record(receipt)
         except RuntimeError:return
 
+    def request_stop(self,ident):
+        """Signal only this instance's active thread even if its receipt is unreadable."""
+        if self.active==ident:self.cancelled.set()
+
     async def shutdown(self):
-        if self.active:self.cancel(self.active)
+        if self.active:
+            try:self.cancel(self.active)
+            except HTTPException as error:
+                if error.status_code not in {404,409}:raise
+                self.request_stop(self.active)
         deadline=time.monotonic()+30
         while self.active and time.monotonic()<deadline:await asyncio.sleep(.1)
 

@@ -14,11 +14,13 @@ import uuid
 from fastapi import HTTPException, Request
 from fastapi.responses import HTMLResponse
 from file_census import SingleWriter
-from kilo_bridge import ROOT as KILO_ROOT, save
+from kilo_bridge import ROOT as KILO_ROOT, MAX_RUN_SECONDS, save
 
 BASE = Path(__file__).resolve().parent
 STATE = Path('H:/NEXEN/state/continuity')
 TERMINAL = {'draft_ready', 'failed', 'cancelled', 'interrupted'}
+ACTIVE_WAIT_SECONDS = MAX_RUN_SECONDS + 15
+SHUTDOWN_WAIT_SECONDS = ACTIVE_WAIT_SECONDS + 5
 
 
 def timestamp():
@@ -122,7 +124,14 @@ class ContinuityWorker:
         try:
             with SingleWriter(self.kilo_root):
                 for row in stale:
-                    receipt = self.kilo.get(row['job_id'])
+                    try:
+                        receipt = self.kilo.get(row['job_id'])
+                    except HTTPException as error:
+                        if error.status_code not in {404, 409}:
+                            raise
+                        self.update_receipt(row['job_id'], 'interrupted',
+                                            detail='Previous draft receipt is unavailable; no automatic retry.')
+                        continue
                     state = receipt.get('status')
                     if state == 'running' and row['state'] == 'running' and row['attempts'] == 1:
                         receipt.update(status='interrupted', error='The continuity worker stopped during this owned draft. No automatic retry was made.')
@@ -196,7 +205,14 @@ class ContinuityWorker:
             self.heartbeat('running_local_draft')
             # Kilo owns its bounded subprocess timeout and lock. Pause prevents NEXT job;
             # it does not interrupt a harmless in-progress draft or release its GPU early.
+            deadline = time.monotonic() + ACTIVE_WAIT_SECONDS
             while self.kilo.active == ident:
+                if time.monotonic() >= deadline:
+                    self.stop_owned(ident)
+                    self.update_receipt(ident, 'interrupted', attempts=1,
+                                        detail='Adapter exceeded its bounded completion wait; manual review is required. No retry.')
+                    self.active = None
+                    return 'adapter_completion_timeout'
                 await asyncio.sleep(min(1, self.interval))
                 self.heartbeat('finishing_current_draft' if self.gate() != 'ready' else 'running_local_draft')
             result = self.kilo.get(ident)
@@ -234,18 +250,37 @@ class ContinuityWorker:
                 self.lease = None
             self.heartbeat('stopped')
 
+    def stop_owned(self, ident):
+        """Request cancellation without letting a missing receipt prevent signalling."""
+        if self.kilo.active != ident:
+            return
+        try:
+            self.kilo.cancel(ident)
+        except Exception:
+            self.logger.error('shutdown_cancel_failed')
+            signal = getattr(self.kilo, 'request_stop', None)
+            if callable(signal):
+                try:
+                    signal(ident)
+                except Exception:
+                    self.logger.error('shutdown_signal_failed')
+
     async def shutdown(self):
         self.stopping = True
         self.wake.set()
         try:
             # Cancel only this worker's active Kilo job, never a manual job.
             if self.active and self.kilo.active == self.active:
-                try:
-                    self.kilo.cancel(self.active)
-                except Exception:
-                    self.logger.error('shutdown_cancel_failed')
+                self.stop_owned(self.active)
             if self.loop_task:
-                await self.loop_task
+                try:
+                    await asyncio.wait_for(self.loop_task, timeout=SHUTDOWN_WAIT_SECONDS)
+                except asyncio.TimeoutError:
+                    if self.active:
+                        self.update_receipt(self.active, 'interrupted',
+                                            detail='Shutdown wait expired; the draft requires manual review. No automatic retry.')
+                        self.active = None
+                    self.logger.error('shutdown_wait_expired')
         finally:
             try:
                 # The normal loop releases this already. Also cover a worker

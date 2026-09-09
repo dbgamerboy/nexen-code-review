@@ -365,8 +365,9 @@ def validate_draft(raw, source, kind, model, chosen):
         data = json.loads(raw)
     else:
         data = raw
-    if not isinstance(data, dict) or not isinstance(data.get('steps'), list) or not 1 <= len(data['steps']) <= 16:
-        raise ValueError('The model draft must contain 1 to 16 source-cited steps.')
+    max_steps = 5 if kind == 'guide' else 16
+    if not isinstance(data, dict) or not isinstance(data.get('steps'), list) or not 1 <= len(data['steps']) <= max_steps:
+        raise ValueError(f'The model draft must contain 1 to {max_steps} source-cited steps.')
     available = {row['id'] for row in chosen}
     steps = []
     for item in data['steps']:

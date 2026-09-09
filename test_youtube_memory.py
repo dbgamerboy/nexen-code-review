@@ -13,6 +13,7 @@ import httpx
 from pydantic import ValidationError
 
 from memory_bridge import SharedMemory
+from test_support import fixture_root
 from youtube_memory import (YouTubeMemory, SourceBody, RunBody, CaptionUnavailable, canonical_url,
                             caption_url, normalize_segments, compile_prompt, validate_draft, register, sha, fetch_captions, local_draft)
 
@@ -42,12 +43,12 @@ class DB:
 
 class YouTubeMemoryTests(unittest.TestCase):
     def setUp(self):
-        self.temp=tempfile.TemporaryDirectory()
+        self.temp=tempfile.TemporaryDirectory(dir=fixture_root(),prefix='youtube-memory-')
+        self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name)
         self.db=DB(self.root/'test.sqlite3')
         self.calls=[]
         self.worker=self.make_worker()
-    def tearDown(self):self.temp.cleanup()
     def make_worker(self,**kwargs):
         return YouTubeMemory(self.db,root=self.root/'sources',background=False,model_gate=lambda:None,**kwargs)
     def ready(self,text='[00:03] Build modular context memory.\n[01:20] Test the proposed workflow.'):
@@ -130,6 +131,22 @@ class YouTubeMemoryTests(unittest.TestCase):
         self.assertEqual(len(self.calls),1)
         _,chosen=compile_prompt(source,'guide')
         with self.assertRaises(ValueError):validate_draft({'steps':[{'instruction':'Guess','source_refs':['s999']}]},source,'guide','fixture',chosen)
+
+    def test_final_guide_validation_enforces_five_steps_without_limiting_workflows(self):
+        source=self.ready();_,chosen=compile_prompt(source,'guide')
+        def draft(size):
+            return {'steps':[{'instruction':'Review the cited source.','source_refs':['s1']} for _ in range(size)]}
+        guide=validate_draft(draft(5),source,'guide','fixture',chosen)
+        self.assertEqual(len(guide['steps']),5)
+        self.assertTrue(all(step['execution_status']=='not_executed' for step in guide['steps']))
+        with self.assertRaisesRegex(ValueError,'1 to 5 source-cited steps'):
+            validate_draft(draft(6),source,'guide','fixture',chosen)
+        self.assertEqual(len(validate_draft(draft(16),source,'workflow','fixture',chosen)['steps']),16)
+        with self.assertRaisesRegex(ValueError,'1 to 16 source-cited steps'):
+            validate_draft(draft(17),source,'workflow','fixture',chosen)
+        broken=draft(1);broken['steps'][0]['source_refs']=['unseen']
+        with self.assertRaisesRegex(ValueError,'missing or unseen'):
+            validate_draft(broken,source,'guide','fixture',chosen)
 
     def test_compile_cancel_and_pause_preserve_source(self):
         source=self.ready();worker=self.make_worker(generator=self.output)

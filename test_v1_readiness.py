@@ -1,14 +1,16 @@
 from contextlib import contextmanager
 from pathlib import Path
 import json,sqlite3,tempfile,unittest
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 from fastapi import FastAPI,HTTPException
 from fastapi.testclient import TestClient
 import app_auth
 import v1_readiness as m
 from task_tracking import TaskCreate,TaskUpdate
+from test_support import fixture_root
 
-ROOT=Path('H:/NEXEN/work/readiness-fixtures');ROOT.mkdir(parents=True,exist_ok=True)
 class DB:
     def __init__(self,path):self.path=path;self.memory_vault=path.parent/'vault'
     @contextmanager
@@ -24,7 +26,7 @@ class DB:
 
 class Tests(unittest.TestCase):
     def setUp(self):
-        self.temporary=tempfile.TemporaryDirectory(dir=ROOT)
+        self.temporary=tempfile.TemporaryDirectory(dir=fixture_root(),prefix='readiness-')
         self.addCleanup(self.temporary.cleanup)
         self.root=Path(self.temporary.name);self.db=DB(self.root/'db.sqlite')
         self.state=self.root/'state';self.state.mkdir()
@@ -32,6 +34,45 @@ class Tests(unittest.TestCase):
         self.flow=m.Readiness(self.db,state=self.state,probe=self.probe,adapter_probe=lambda connections:{})
     def receipt(self,name,**kwargs):(self.state/m.RECEIPTS[name]).write_text(json.dumps(kwargs),encoding='utf-8')
     def item(self,name):return next(i for i in self.flow.packet()['items'] if i['id']==name)
+    def test_slow_probe_does_not_block_reporting_and_overlapping_refreshes_coalesce(self):
+        started,release,second_waiting=threading.Event(),threading.Event(),threading.Event()
+        calls=[]
+        class ProbeLock:
+            def __init__(self):self.lock=threading.Lock();self.entries=0
+            def __enter__(self):
+                self.entries+=1
+                if self.entries==2:second_waiting.set()
+                self.lock.acquire()
+            def __exit__(self,*args):self.lock.release()
+        def probe():
+            calls.append(len(calls)+1)
+            if len(calls)==1:
+                started.set()
+                if not release.wait(5):raise RuntimeError('Fixture probe was not released')
+            return {'checked_at':'fixture','n8n':True,'generation':len(calls)}
+        self.flow.probe=probe;self.flow.probe_lock=ProbeLock()
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            first=pool.submit(self.flow.connection_snapshot,True)
+            try:
+                self.assertTrue(started.wait(2))
+                second=pool.submit(self.flow.connection_snapshot,True)
+                self.assertTrue(second_waiting.wait(2))
+                report=pool.submit(self.flow.report,'n8n',m.ReportBody(completed=True,outcome='Fixture setup report.'))
+                self.assertTrue(report.result(timeout=2)['changed'])
+                self.assertFalse(first.done())
+            finally:release.set()
+            self.assertEqual(first.result(timeout=2),second.result(timeout=2))
+        self.assertEqual(calls,[1])
+        self.assertEqual(self.flow.connection_snapshot()['generation'],1)
+        self.assertEqual(self.flow.connection_snapshot(True)['generation'],2)
+        self.assertEqual(calls,[1,2])
+    def test_probe_failure_publishes_fallback_and_releases_probe_lock(self):
+        self.flow.probe=lambda:(_ for _ in ()).throw(OSError('Fixture unavailable'))
+        fallback=self.flow.connection_snapshot(True)
+        self.assertIn('checked_at',fallback)
+        self.assertGreater(self.flow.cached_at,0)
+        self.flow.probe=lambda:{'checked_at':'recovered','n8n':True}
+        self.assertEqual(self.flow.connection_snapshot(True)['checked_at'],'recovered')
     def test_seed_idempotency_preserves_task_history_and_next_step(self):
         ident=self.flow.tasks['pc2'];self.flow.tracker.update(ident,TaskUpdate(status='blocked',next_step='Keep my existing next action.',outcome='Existing evidence.'))
         count=self.db.scalar('SELECT count(*) FROM hub_requests')

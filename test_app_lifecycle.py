@@ -89,6 +89,25 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
             async with lifespan(app): pass
         self.assertEqual(events, ['start','stop','start','stop'])
 
+    async def test_cancellation_remains_task_cancellation_when_cleanup_also_fails(self):
+        app = FastAPI(lifespan=lifespan)
+        events = []
+        register_lifecycle(app, shutdown=lambda: events.append('last cleanup'))
+        def fail():
+            raise ValueError('Fixture cleanup failure')
+        register_lifecycle(app, shutdown=fail)
+        async def cancelled_lifespan():
+            async with lifespan(app):
+                raise asyncio.CancelledError()
+        task = asyncio.create_task(cancelled_lifespan())
+        with self.assertRaises(asyncio.CancelledError) as raised:
+            await task
+        self.assertTrue(task.cancelled())
+        self.assertIsInstance(raised.exception.__cause__, BaseExceptionGroup)
+        self.assertEqual([type(error) for error in raised.exception.__cause__.exceptions], [ValueError])
+        self.assertEqual(events, ['last cleanup'])
+        self.assertFalse(app.state.nexen_lifecycle.active)
+
 
 class LifecycleIntegrationTests(unittest.TestCase):
     def test_default_fastapi_is_installed_without_losing_existing_handlers(self):

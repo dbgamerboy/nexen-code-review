@@ -13,6 +13,7 @@ from typing import Callable
 
 from fastapi import HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
+from storage_policy import tool_environment
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,8 @@ APP_BY_ID = {item.id: item for item in APPS}
 HOSTS = frozenset(("localhost:8788", "127.0.0.1:8788", "[::1]:8788"))
 APP_COOLDOWN_SECONDS = 30.0
 GLOBAL_COOLDOWN_SECONDS = 2.0
+MUSIC_ROOT = Path('H:/NEXEN/music')
+STORAGE_SETUP_REASON = 'H/F storage setup required. This desktop app has no verified NEXEN storage adapter.'
 
 
 class LaunchBody(BaseModel):
@@ -80,12 +83,38 @@ def validate_request(request: Request, *, mutation: bool = False) -> None:
                      request.headers.get("x-nexen-action"), mutation=mutation)
 
 
+def fl_adapter():
+    """Reuse FL's actual user-data probe without requiring MP3 validation."""
+    from music_render import NativeFL
+    return NativeFL(root=MUSIC_ROOT)
+
+
+def storage_status(item: DesktopApp) -> dict:
+    """Report configured launch storage, not full third-party confinement."""
+    result = {'state': 'needs_setup', 'configured_paths_verified': False,
+              'allowed_drives': ['H:', 'F:'], 'third_party_write_confinement': False,
+              'reason': STORAGE_SETUP_REASON}
+    if item.id != 'flstudio':
+        return result
+    try:
+        path = fl_adapter().user_data_path()
+    except (OSError, ValueError, ImportError):
+        result['reason'] = 'H/F storage setup required. FL Studio user-data settings could not be verified.'
+        return result
+    result.update(state='configured', configured_paths_verified=True,
+                  fl_user_data=str(path), profile_root=str(MUSIC_ROOT), reason=None,
+                  scope='Configured FL user data and NEXEN child profile/cache paths only; plugin-specific writes remain unverified.')
+    return result
+
+
 def app_status(item: DesktopApp) -> dict:
-    available = bool(item.executable and item.executable.is_file())
+    installed = bool(item.executable and item.executable.is_file())
+    storage = storage_status(item)
+    available = installed and storage['configured_paths_verified']
     return {"id": item.id, "name": item.name, "description": item.description,
-            "available": available,
+            "available": available, "installed": installed, 'storage': storage,
             "executable": str(item.executable) if item.executable else None,
-            "reason": None if available else item.unavailable_reason}
+            "reason": None if available else storage['reason'] or item.unavailable_reason}
 
 
 class Launcher:
@@ -101,8 +130,9 @@ class Launcher:
         item = APP_BY_ID.get(app_id)
         if item is None:
             raise HTTPException(404, "Unknown desktop application.")
-        if not app_status(item)["available"]:
-            raise HTTPException(409, item.unavailable_reason)
+        status = app_status(item)
+        if not status["available"]:
+            raise HTTPException(409, status['reason'])
         with self.lock:
             now = self.clock()
             app_wait = APP_COOLDOWN_SECONDS - (now - self.last_app[app_id]) if app_id in self.last_app else 0
@@ -121,15 +151,33 @@ class Launcher:
             self.last_app[app_id] = now
             self.last_any = now
             try:
+                # Re-read the actual setting after any earlier status check.
+                # Opening the DAW does not require the MP3 validator dependency.
+                adapter = fl_adapter()
+                environment = tool_environment(MUSIC_ROOT)
+                adapter.user_data_path()
+                if adapter.running():
+                    raise HTTPException(409, 'FL Studio is already running. Save and close that session before using the verified NEXEN launcher.')
+            except (OSError, ValueError, ImportError, subprocess.SubprocessError) as exc:
+                try:
+                    self.db.event('pc_launch_blocked', 'Desktop storage or process verification failed',
+                                  level='ERROR', data={'app_id': app_id, 'error_type': type(exc).__name__})
+                except Exception:
+                    pass
+                raise HTTPException(409, 'H/F storage setup required. FL storage or process state could not be verified; nothing was launched.') from None
+            try:
                 process = self.spawn([str(item.executable)], shell=False,
-                                     cwd=str(item.executable.parent))
+                                     cwd=str(item.executable.parent), env=environment,
+                                     stdin=subprocess.DEVNULL)
             except OSError as exc:
                 self.db.event("pc_launch_failed", f"Could not open {item.name}", level="ERROR",
                               data={"app_id": app_id, "error_type": type(exc).__name__})
                 raise HTTPException(502, "Windows could not start this application.") from exc
             result = {"status": "launch_requested", "id": app_id, "name": item.name,
                       "pid": process.pid, "cooldown_seconds": int(APP_COOLDOWN_SECONDS),
-                      "message": "Windows accepted the launch. The app may reuse an existing window."}
+                      "storage": {'configured_paths_verified': True, 'allowed_drives': ['H:', 'F:'],
+                                  'third_party_write_confinement': False},
+                      "message": "Windows accepted the FL Studio launch with verified user-data storage and an H/F profile environment. Plugin-specific writes remain unverified."}
             try:
                 self.db.event("pc_launch_started", f"Started {item.name}",
                               data={"app_id": app_id, "pid": process.pid})
@@ -146,7 +194,7 @@ def register(app, db):
         validate_request(request)
         return {"apps": [app_status(item) for item in APPS],
                 "mode": "deliberate_desktop_launch",
-                "description": "Open a verified desktop app. This does not move the mouse, send prompts, or spend money.",
+                "description": "Open a desktop app only after its H/F storage adapter is verified. Other entries remain visible with setup blockers.",
                 "cooldown_seconds": int(APP_COOLDOWN_SECONDS)}
 
     @app.post("/api/pc/launch")

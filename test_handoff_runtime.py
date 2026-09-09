@@ -82,8 +82,9 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         for secret in ('do-not-copy','RAW PRIVATE EXPORT','private-host','untrusted.invalid'):self.assertNotIn(secret,text)
         self.assertEqual(data['prepared_handoff']['url'],'/api/agents/handoffs/'+'a'*64)
         self.assertTrue(data['providers']['openrouter']['key_verified']);self.assertFalse(data['providers']['openrouter']['automatic_paid_requests'])
+        self.assertTrue(data['sources'])
         self.assertTrue(all(source.get('sha256') is None or len(source['sha256'])==64 for source in data['sources']))
-    async def test_partial_write_keeps_previous_atomic_latest_and_does_not_retry_early(self):
+    async def test_partial_write_keeps_previous_atomic_latest_and_allows_immediate_retry(self):
         await self.runtime.start();before=self.runtime.latest();original=self.runtime.atomic
         def fail(name,raw):
             if name.endswith('.md'):raise OSError('private fixture failure')
@@ -92,8 +93,18 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(self.runtime,'atomic',side_effect=fail):result=self.runtime.checkpoint()
         self.assertEqual(result['reason'],'write_failed');self.assertEqual(self.runtime.latest(),before)
         self.assertNotIn('private fixture failure',self.runtime.last_error)
+        self.assertTrue(self.runtime.checkpoint()['written'])
         self.assertEqual(self.runtime.checkpoint()['reason'],'not_due')
-        self.now+=3600;self.assertTrue(self.runtime.checkpoint()['written'])
+    async def test_failed_initial_checkpoint_retries_on_next_worker_interval(self):
+        with patch.object(self.runtime,'atomic',side_effect=OSError('Fixture unavailable output')):
+            await self.runtime.start()
+        self.assertIsNone(self.runtime.last_attempt)
+        self.assertIsNone(self.runtime.latest())
+        for _ in range(100):
+            if self.runtime.latest():break
+            await asyncio.sleep(.01)
+        self.assertIsNotNone(self.runtime.latest())
+        self.assertEqual(self.runtime.last_attempt,self.now)
     async def test_atomic_replace_failure_preserves_existing_bytes(self):
         await self.runtime.start();path=self.runtime.root/'LATEST.json';before=path.read_bytes()
         with patch.object(m.os,'replace',side_effect=OSError('fixture')):

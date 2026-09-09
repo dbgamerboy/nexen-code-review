@@ -123,7 +123,9 @@ class Readiness:
         self.requirements,self.desktop=requirements,desktop
         self.state,self.probe=Path(state),probe
         self.adapter_probe=adapter_probe
-        self.lock,self.cache,self.cached_at=threading.RLock(),{},0
+        self.lock=threading.RLock()
+        self.probe_lock=threading.Lock()
+        self.cache,self.cached_at,self.cache_generation={},0,0
         self.tasks={}
         for ident,title,key,next_step,*_ in CATALOG:
             if key:
@@ -131,10 +133,25 @@ class Readiness:
 
     def connection_snapshot(self,refresh=False):
         with self.lock:
-            if refresh or not self.cache or time.monotonic()-self.cached_at>30:
-                try: self.cache=self.probe()
-                except Exception: self.cache={'checked_at':now()}
-                self.cached_at=time.monotonic()
+            generation=self.cache_generation
+            if not refresh and self.cache and time.monotonic()-self.cached_at<=30:
+                return dict(self.cache)
+        # Slow socket/daemon checks must not hold the task-report lock. A
+        # dedicated lock serializes probes and coalesces overlapping refreshes.
+        with self.probe_lock:
+            with self.lock:
+                if self.cache and time.monotonic()-self.cached_at<=30 and (
+                        not refresh or self.cache_generation!=generation):
+                    return dict(self.cache)
+            try:
+                fresh=self.probe()
+                if not isinstance(fresh,dict):
+                    raise ValueError('The connection probe did not return a snapshot.')
+            except Exception:
+                fresh={'checked_at':now()}
+            with self.lock:
+                self.cache,self.cached_at=fresh,time.monotonic()
+                self.cache_generation+=1
             return dict(self.cache)
 
     def packet(self,refresh=False):

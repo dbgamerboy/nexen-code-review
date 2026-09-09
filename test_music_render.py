@@ -18,6 +18,7 @@ from pydantic import ValidationError
 import app_auth
 import music_render as m
 from task_tracking import TaskCreate
+from test_support import fixture_root
 
 
 class DB:
@@ -50,7 +51,7 @@ class Adapter:
 
 class RenderTests(unittest.TestCase):
     def setUp(self):
-        self.temp=tempfile.TemporaryDirectory(dir='H:/NEXEN/temp');self.root=Path(self.temp.name)
+        self.temp=tempfile.TemporaryDirectory(dir=fixture_root());self.root=Path(self.temp.name)
         self.source_root=self.root/'songs';self.source_root.mkdir();self.source=self.source_root/'Fixture Song.flp'
         self.source.write_bytes(b'FLhd'+b'fixture project'*100)
         self.digest=hashlib.sha256(self.source.read_bytes()).hexdigest();self.project='a'*16
@@ -71,7 +72,7 @@ class RenderTests(unittest.TestCase):
     def ready(self,job=None):
         job=job or self.enqueue()
         return self.service.preflight(job['id'],m.Preflight(copied_project_load_checked=True,missing_assets_resolved=True,
-              render_settings_checked=True,user_data_off_c_checked=True,expected_duration_seconds=60))
+              render_settings_checked=True,user_data_hf_checked=True,nexen_profile_setup_checked=True,expected_duration_seconds=60))
     def run_job(self,job):
         self.service.start(job['id']);self.service.future.result(timeout=5);return self.service.get(job['id'])
 
@@ -101,6 +102,56 @@ class RenderTests(unittest.TestCase):
         self.adapter.busy=False;self.service.space=lambda:1
         with self.assertRaises(HTTPException):self.service.start(job['id'])
         self.assertEqual(self.adapter.launches,[])
+
+    def test_old_off_c_check_and_stale_receipt_do_not_authorize_a_render(self):
+        job=self.enqueue()
+        checks=m.Preflight(copied_project_load_checked=True,missing_assets_resolved=True,
+                           render_settings_checked=True,user_data_off_c_checked=True)
+        self.assertEqual(self.service.preflight(job['id'],checks)['status'],'needs_preflight')
+        with self.assertRaises(HTTPException):self.service.start(job['id'])
+        ready=self.ready(job);ready['preflight'].pop('storage_policy_version');self.service.save(ready)
+        with self.assertRaises(HTTPException) as error:self.service.start(job['id'])
+        self.assertEqual(error.exception.status_code,409)
+        self.assertEqual(self.adapter.launches,[])
+
+    def test_storage_policy_failure_stops_before_dispatch(self):
+        job=self.ready()
+        with patch.object(self.adapter,'ready',side_effect=m.StoragePolicyError('NEXEN saves only to H: or F:.')):
+            with self.assertRaises(HTTPException) as error:self.service.start(job['id'])
+        self.assertEqual(error.exception.status_code,409)
+        self.assertIn('H: or F:',error.exception.detail)
+        self.assertIsNone(self.service.active);self.assertEqual(self.adapter.launches,[])
+
+    def test_profile_process_probe_timeout_is_a_setup_conflict(self):
+        job=self.enqueue()
+        with patch.object(self.adapter,'confirm_profile_setup',create=True,side_effect=m.subprocess.TimeoutExpired('tasklist',8)):
+            with self.assertRaises(HTTPException) as error:self.ready(job)
+        self.assertEqual(error.exception.status_code,409)
+        self.assertEqual(self.service.get(job['id'])['status'],'needs_preflight')
+        self.assertEqual(self.adapter.launches,[])
+
+    def test_hash_validation_failures_are_conflicts_without_job_completion(self):
+        with patch.object(m,'hash_file',side_effect=ValueError('fixture missing source')):
+            with self.assertRaises(HTTPException) as error:self.enqueue()
+        self.assertEqual(error.exception.status_code,409)
+        original=m.hash_file
+        def fail_copy(path,limit):
+            if path.name=='project.flp':raise ValueError('fixture copy grew')
+            return original(path,limit)
+        with patch.object(m,'hash_file',side_effect=fail_copy):
+            with self.assertRaises(HTTPException) as error:self.enqueue()
+        self.assertEqual(error.exception.status_code,409)
+        self.assertEqual(self.db.rows('SELECT * FROM music_render_jobs'),[])
+        job=self.enqueue()
+        with patch.object(m,'hash_file',side_effect=ValueError('fixture missing copy')):
+            with self.assertRaises(HTTPException) as error:self.ready(job)
+        self.assertEqual(error.exception.status_code,409)
+        self.assertEqual(self.service.get(job['id'])['status'],'needs_preflight')
+        rendered=self.run_job(self.ready(job))
+        with patch.object(m,'hash_file',side_effect=ValueError('fixture audio oversized')):
+            with self.assertRaises(HTTPException) as error:self.service.accept(rendered['id'],m.ListenCheck(audible_mix_confirmed=True))
+        self.assertEqual(error.exception.status_code,409)
+        self.assertEqual(self.service.get(job['id'])['status'],'rendered')
 
     def test_source_change_and_copy_change_require_new_preflight(self):
         job=self.ready();copy=Path(job['copied_project']);copy.write_bytes(b'FLhdchanged')
@@ -220,16 +271,54 @@ class RenderTests(unittest.TestCase):
 
 class NativeContracts(unittest.TestCase):
     def test_fixed_cli_has_no_shell_or_stems_or_bitrate_switch(self):
-        with tempfile.TemporaryDirectory(dir='H:/NEXEN/temp') as directory:
+        with tempfile.TemporaryDirectory(dir=fixture_root()) as directory:
             root=Path(directory);adapter=m.NativeFL(root)
-            with patch.object(m.subprocess,'Popen') as spawn:adapter.launch(root/'project.flp',root/'audio')
+            with patch.object(adapter,'user_data_path',return_value=root),patch.object(adapter,'require_profile_setup',return_value={}),patch.object(m.subprocess,'Popen') as spawn:
+                adapter.launch(root/'project.flp',root/'audio')
             args,kwargs=spawn.call_args
             self.assertEqual(args[0],[str(m.FL_EXE),'/Emp3','/R',str(root/'project.flp'),'/O'+str(root/'audio')])
             self.assertNotIn('shell',kwargs);self.assertEqual(kwargs['env']['TEMP'],str(root/'temp'))
             self.assertTrue(all(Path(kwargs['env'][key]).is_relative_to(root) for key in ('TEMP','TMP','USERPROFILE','APPDATA','LOCALAPPDATA')))
 
+    def test_actual_registry_setting_is_validated_before_any_spawn(self):
+        import winreg
+        with tempfile.TemporaryDirectory(dir=fixture_root()) as directory:
+            root=Path(directory);adapter=m.NativeFL(root)
+            with patch.object(winreg,'OpenKey') as opened,patch.object(winreg,'QueryValueEx') as query,patch.object(m.subprocess,'Popen') as spawn:
+                for path,kind in [('C:/Users/example/Documents/FL Studio',winreg.REG_SZ),
+                                  ('D:/Music',winreg.REG_SZ),('E:/Music',winreg.REG_SZ),
+                                  ('H:/missing-folder-fixture-20260909',winreg.REG_SZ),
+                                  (str(root),winreg.REG_EXPAND_SZ)]:
+                    query.return_value=(path,kind)
+                    with self.subTest(path=path,kind=kind),self.assertRaises(m.StoragePolicyError):
+                        adapter.launch(root/'project.flp',root/'audio')
+                    self.assertFalse(adapter.storage_status()['configured_paths_verified'])
+                spawn.assert_not_called()
+                query.return_value=(str(root),winreg.REG_SZ)
+                self.assertEqual(adapter.user_data_path(),root.resolve())
+                self.assertTrue(adapter.storage_status()['configured_paths_verified'])
+                self.assertFalse(adapter.storage_status()['third_party_write_confinement'])
+                opened.assert_called_with(winreg.HKEY_CURRENT_USER,r'Software\Image-Line\Shared\Paths')
+                query.side_effect=FileNotFoundError('fixture missing registry')
+                self.assertFalse(adapter.storage_status()['configured_paths_verified'])
+
+    def test_empty_or_changed_profile_never_authorizes_background_render(self):
+        with tempfile.TemporaryDirectory(dir=fixture_root()) as directory:
+            root=Path(directory);adapter=m.NativeFL(root);exe=root/'FL64.exe';exe.write_bytes(b'fixture executable')
+            m.tool_environment(root)
+            with patch.object(m,'FL_EXE',exe),patch.object(adapter,'user_data_path',return_value=root),patch.object(adapter,'running',return_value=False),patch.object(m.subprocess,'Popen') as spawn:
+                with self.assertRaises(m.StoragePolicyError):adapter.launch(root/'project.flp',root/'audio')
+                spawn.assert_not_called()
+                receipt=adapter.confirm_profile_setup()
+                self.assertTrue(receipt['basis'].startswith('user_reported_'))
+                self.assertEqual(adapter.require_profile_setup(),receipt)
+                exe.write_bytes(b'fixture changed executable')
+                with self.assertRaises(m.StoragePolicyError):adapter.launch(root/'project.flp',root/'audio')
+                spawn.assert_not_called()
+
     def test_real_mutagen_parser_accepts_synthetic_mp3_headers_and_rejects_text(self):
-        with tempfile.TemporaryDirectory(dir='H:/NEXEN/temp') as directory:
+        if not m.DEPENDENCY.is_file():self.skipTest('Pinned MP3 validator wheel is not installed; no parser validation claimed.')
+        with tempfile.TemporaryDirectory(dir=fixture_root()) as directory:
             path=Path(directory)/'fixture.mp3'
             path.write_bytes((b'\xff\xfb\x90\x00'+b'\x00'*413)*100)
             result=m.inspect_mp3(path)

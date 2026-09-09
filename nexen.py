@@ -349,14 +349,26 @@ class MemoryContextError(RuntimeError):
 
 
 class ModelRouter:
-    def __init__(self, cfg: dict, event=None):
+    REQUEST_TIMEOUT_SECONDS = 120
+    CONNECTION_TIMEOUT_SECONDS = 5
+    SHUTDOWN_BUDGET_SECONDS = 90  # Owned provider cancellation, two 30s DB waits and cleanup.
+
+    def __init__(self, cfg: dict, event=None, stop_requested=None):
         self.cfg = cfg
         self.event = event
+        self.supervised = stop_requested is not None
+        self.stop_requested = stop_requested or (lambda: False)
+
+    def request_timeout(self, configured=None):
+        seconds = self.REQUEST_TIMEOUT_SECONDS if configured is None else float(configured)
+        seconds = max(1, min(self.REQUEST_TIMEOUT_SECONDS, seconds))
+        return httpx.Timeout(seconds, connect=self.CONNECTION_TIMEOUT_SECONDS,
+                             write=self.CONNECTION_TIMEOUT_SECONDS, pool=self.CONNECTION_TIMEOUT_SECONDS)
 
     def _failure(self, provider: str, error: Exception) -> None:
         # Provider exceptions can contain request URLs, keys and private prompts.
         # Persist only code-owned provider names, error types and numeric status.
-        data = {'provider': provider, 'error_class': type(error).__name__}
+        data = {'provider': provider, 'error_class': getattr(error, 'provider_error_class', type(error).__name__)}
         status = getattr(error, 'status_code', None)
         if status is None:
             status = getattr(getattr(error, 'response', None), 'status_code', None)
@@ -393,13 +405,17 @@ class ModelRouter:
 
     def ollama(self, prompt: str):
         o = self.cfg["models"]["ollama"]
-        if not o.get("enabled"):
+        if self.stop_requested() or not o.get("enabled"):
             return None
         try:
+            if self.supervised:
+                from supervisor_provider import run_request
+                return run_request({'provider':'ollama','model':o['model'],'base_url':o['base_url'],
+                                    'timeout_seconds':o.get('timeout_seconds',120),'prompt':prompt}, self.stop_requested)
             r = httpx.post(
                 o["base_url"].rstrip("/") + "/api/generate",
                 json={"model": o["model"], "prompt": prompt, "stream": False},
-                timeout=o.get("timeout_seconds", 120),
+                timeout=self.request_timeout(o.get("timeout_seconds")),
             )
             r.raise_for_status()
             return r.json().get("response")
@@ -408,11 +424,15 @@ class ModelRouter:
             return None
 
     def openai(self, prompt: str, hard=False):
-        if not self.cfg["models"]["openai"].get("enabled") or not os.getenv("OPENAI_API_KEY"):
+        if self.stop_requested() or not self.cfg["models"]["openai"].get("enabled") or not os.getenv("OPENAI_API_KEY"):
             return None
         try:
+            if self.supervised:
+                from supervisor_provider import run_request
+                model = self.cfg['models']['openai']['model_hard' if hard else 'model_fast']
+                return run_request({'provider':'openai','model':model,'prompt':prompt}, self.stop_requested)
             from openai import OpenAI
-            client = OpenAI()
+            client = OpenAI(timeout=self.request_timeout(), max_retries=0)
             m = self.cfg["models"]["openai"]["model_hard" if hard else "model_fast"]
             return client.responses.create(model=m, input=prompt).output_text
         except Exception as error:
@@ -421,11 +441,14 @@ class ModelRouter:
 
     def anthropic(self, prompt: str):
         a = self.cfg["models"]["anthropic"]
-        if not a.get("enabled") or not os.getenv("ANTHROPIC_API_KEY"):
+        if self.stop_requested() or not a.get("enabled") or not os.getenv("ANTHROPIC_API_KEY"):
             return None
         try:
+            if self.supervised:
+                from supervisor_provider import run_request
+                return run_request({'provider':'anthropic','model':a['model'],'prompt':prompt}, self.stop_requested)
             import anthropic
-            client = anthropic.Anthropic()
+            client = anthropic.Anthropic(timeout=self.request_timeout(), max_retries=0)
             msg = client.messages.create(model=a["model"], max_tokens=4000, messages=[{"role":"user","content":prompt}])
             return "".join(x.text for x in msg.content if getattr(x, "type", "") == "text")
         except Exception as error:
@@ -433,6 +456,7 @@ class ModelRouter:
             return None
 
     def text(self, prompt: str, hard=False):
+        if self.stop_requested():return None
         try:
             from memory_runtime import enrich_prompt
             prompt = enrich_prompt(prompt, "workflow" if "workflow" in prompt[:2000].lower() else "code")
@@ -534,11 +558,13 @@ class Analyzer:
 
 
 class ToolFabric:
-    def __init__(self, db: DB, cfg: dict):
+    def __init__(self, db: DB, cfg: dict, stop_requested=None):
         self.db, self.cfg = db, cfg
+        self.stop_requested = stop_requested or (lambda: False)
 
     def probe(self, exe: str):
         for cmd in ([exe,"--version"],[exe,"-v"],[exe,"version"]):
+            if self.stop_requested():return None, 'interrupted'
             try:
                 cp = subprocess.run(cmd, capture_output=True, text=True, timeout=6, creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))
                 out = (cp.stdout or cp.stderr or "").strip()
@@ -552,6 +578,7 @@ class ToolFabric:
         manifest = load_yaml(BASE / "config" / "tools.yaml")
         found = unresolved = 0
         for tool in manifest.get("tools", []):
+            if self.stop_requested():break
             exe = matched = None
             for cmd in tool.get("candidate_commands", []):
                 x = shutil.which(cmd)
@@ -560,6 +587,7 @@ class ToolFabric:
                     break
             if exe:
                 version, health, status = (*self.probe(exe), "installed")
+                if self.stop_requested():break
                 found += 1
             else:
                 version, health, status = None, "not_found", "unresolved"
@@ -575,7 +603,9 @@ class ToolFabric:
                     (tool["name"],tool.get("category"),status,exe,version,json.dumps(tool.get("interfaces",[])),json.dumps(metadata),health,now),
                 )
         stats = {"installed_or_found":found,"unresolved":unresolved}
-        self.db.event("tool_discovery_complete", "Tool discovery complete", data=stats)
+        stopped = self.stop_requested()
+        self.db.event('tool_discovery_interrupted' if stopped else 'tool_discovery_complete',
+                      'Tool discovery interrupted' if stopped else 'Tool discovery complete', data=stats)
         return stats
 
 
@@ -672,16 +702,16 @@ class Jarvis:
 class Supervisor:
     def __init__(self, db: DB, cfg: dict):
         self.db, self.cfg = db, cfg
-        self.router = ModelRouter(cfg, event=db.event)
+        self._stop_event = threading.Event()
+        self.router = ModelRouter(cfg, event=db.event, stop_requested=self._stop_event.is_set)
         self.ingestor = Ingestor(db,cfg)
         self.analyzer = Analyzer(db,self.router)
-        self.tools = ToolFabric(db,cfg)
+        self.tools = ToolFabric(db,cfg,stop_requested=self._stop_event.is_set)
         self.factory = WorkflowFactory(db,cfg)
         self.jarvis = Jarvis(db,cfg,self.router)
         self.last_scan = self.last_tools = self.last_compile = None
         self.last_jarvis_day = None
         self.last_source_pass = None
-        self._stop_event = threading.Event()
         self._thread = None
 
     def start(self) -> None:
@@ -695,9 +725,9 @@ class Supervisor:
     async def shutdown(self) -> None:
         self._stop_event.set()
         if self._thread is not None:
-            await asyncio.to_thread(self._thread.join, 30)
+            await asyncio.to_thread(self._thread.join, ModelRouter.SHUTDOWN_BUDGET_SECONDS)
             if self._thread.is_alive():
-                raise RuntimeError('The NEXEN supervisor did not stop within 30 seconds')
+                raise RuntimeError('The NEXEN supervisor exceeded its bounded provider and cleanup shutdown budget')
             self._thread = None
 
     def recover_interrupted(self):

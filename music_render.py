@@ -33,6 +33,7 @@ from completion_memory import record_event, export_journal
 from file_census import SingleWriter
 from memory_bridge import _reject_links
 from task_tracking import Tracker
+from storage_policy import StoragePolicyError, require_output_path, tool_environment
 
 BASE=Path(__file__).resolve().parent
 ROOT=Path('H:/NEXEN/music')
@@ -60,8 +61,14 @@ def hash_file(path,limit):
             digest.update(data)
     return digest.hexdigest()
 
+def checked_hash(path,limit):
+    """Expose changed/missing local input as an actionable conflict, not a 500."""
+    try:return hash_file(path,limit)
+    except (ValueError,OSError):
+        raise HTTPException(409,'The project or audio file is missing, changed, unreadable or outside its size limit. Review it before continuing.') from None
+
 def atomic_json(path,data):
-    _reject_links(path)
+    path=require_output_path(path)
     temporary=path.with_name('.'+path.name+'.'+uuid.uuid4().hex+'.tmp')
     try:
         with temporary.open('x',encoding='utf-8') as stream:
@@ -93,7 +100,57 @@ def inspect_mp3(path):
             'limitation':'Stream parsing does not prove every sample, plugin, vocal or effect is present. Listen to the full mix.'}
 
 class NativeFL:
-    def __init__(self,root=ROOT):self.root=Path(root)
+    def __init__(self,root=ROOT):self.root=require_output_path(root)
+    def user_data_path(self):
+        """Read FL's actual configured save root, without changing its settings."""
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,r'Software\Image-Line\Shared\Paths') as key:
+            value,kind=winreg.QueryValueEx(key,'Shared data')
+        if kind!=winreg.REG_SZ or not isinstance(value,str):
+            raise StoragePolicyError('FL Studio needs a verified H: or F: user-data folder.')
+        path=require_output_path(value)
+        if not path.is_dir():raise StoragePolicyError('FL Studio user-data folder is unavailable; no fallback is allowed.')
+        return path
+    def profile_identity(self):
+        """Bind a user-reported setup check to these actual paths and FL build."""
+        paths={name:str(require_output_path(self.root/relative,within=self.root)) for name,relative in
+               {'profile':'profile','roaming':'profile/roaming','local':'profile/local'}.items()}
+        if not all(Path(value).is_dir() for value in paths.values()):
+            raise StoragePolicyError('Open FL Studio using the NEXEN FL button, complete first-run setup and close FL before checking this profile.')
+        _reject_links(FL_EXE);build=FL_EXE.stat()
+        return {**paths,'user_data':str(self.user_data_path()),'executable':str(FL_EXE),
+                'build_size':build.st_size,'build_modified_ns':build.st_mtime_ns}
+    def confirm_profile_setup(self):
+        """Record an explicit user check; never infer setup from empty folders."""
+        identity=self.profile_identity()
+        if self.running():raise StoragePolicyError('Save and close FL after first-run setup before confirming this check.')
+        receipt={'schema_version':1,'basis':'user_reported_nexen_profile_opened_configured_and_closed',
+                 'checked_at':now(),'identity':identity}
+        atomic_json(self.root/'profile'/'fl-setup-check.json',receipt)
+        return receipt
+    def require_profile_setup(self):
+        identity=self.profile_identity()
+        try:
+            path=require_output_path(self.root/'profile'/'fl-setup-check.json',within=self.root)
+            with path.open('rb') as stream:raw=stream.read(16385)
+            if len(raw)>16384:raise ValueError('Oversized profile receipt')
+            receipt=json.loads(raw)
+            if receipt.get('schema_version')!=1 or receipt.get('identity')!=identity or receipt.get('basis')!='user_reported_nexen_profile_opened_configured_and_closed':raise ValueError('Stale profile receipt')
+        except (OSError,ValueError,AttributeError):
+            raise StoragePolicyError('Complete the visible NEXEN FL profile setup check before background rendering. A folder alone is not an initialized profile.') from None
+        return receipt
+    def storage_status(self):
+        result={'allowed_drives':['H:','F:'],'output_root':str(self.root/'exports'),
+                'configured_paths_verified':False,'fl_user_data':None,
+                'third_party_write_confinement':False,
+                'scope':'NEXEN output, copied projects and redirected caches. Plugin-specific save paths still require inspection.'}
+        try:
+            require_output_path(self.root)
+            result['fl_user_data']=str(self.user_data_path())
+            result['configured_paths_verified']=True
+        except (OSError,ValueError,ImportError) as error:
+            result['blocker']=str(error) if isinstance(error,StoragePolicyError) else 'FL Studio storage settings could not be verified. No render may start.'
+        return result
     def running(self):
         tasklist=Path(os.environ.get('SystemRoot','C:/Windows'))/'System32/tasklist.exe'
         result=subprocess.run([str(tasklist),'/FO','CSV','/NH'],capture_output=True,timeout=8,
@@ -102,13 +159,20 @@ class NativeFL:
         rows=csv.reader(io.StringIO(result.stdout.decode('utf-8',errors='replace')))
         return any(row and row[0].casefold() in {'fl.exe','fl64.exe','flengine_x64.exe','flengine.exe'} for row in rows)
     def ready(self):
+        require_output_path(self.root)
+        self.user_data_path()
         _reject_links(FL_EXE)
         if not FL_EXE.is_file():raise ValueError('The configured F: FL Studio executable is missing.')
+        self.require_profile_setup()
         mutagen_class()
     def launch(self,project,output):
-        env=os.environ.copy()
-        for name,folder in {'TEMP':'temp','TMP':'temp','USERPROFILE':'profile','APPDATA':'profile/roaming','LOCALAPPDATA':'profile/local'}.items():
-            path=self.root/folder;_reject_links(path);path.mkdir(parents=True,exist_ok=True);env[name]=str(path)
+        self.user_data_path()
+        self.require_profile_setup()
+        project=require_output_path(project,within=self.root)
+        output=require_output_path(output,within=self.root)
+        env=tool_environment(self.root)
+        require_output_path(project,within=self.root)
+        require_output_path(output,within=self.root)
         # The single-project command is documented by Image-Line. Bitrate,
         # range and tails come from the inspected FL export settings.
         argv=[str(FL_EXE),'/Emp3','/R',str(project),'/O'+str(output)]
@@ -129,7 +193,9 @@ class Preflight(BaseModel):
     copied_project_load_checked:bool=Field(strict=True)
     missing_assets_resolved:bool=Field(strict=True)
     render_settings_checked:bool=Field(strict=True)
-    user_data_off_c_checked:bool=Field(strict=True)
+    user_data_off_c_checked:bool=Field(default=False,strict=True)
+    user_data_hf_checked:bool=Field(default=False,strict=True)
+    nexen_profile_setup_checked:bool=Field(default=False,strict=True)
     expected_duration_seconds:float|None=Field(default=None,gt=1,le=7200)
     notes:str=Field(default='',max_length=2000)
 
@@ -141,7 +207,7 @@ class ListenCheck(BaseModel):
 class MusicRender:
     def __init__(self,db,*,root=ROOT,inventory=INVENTORY,source_root=SOURCE_ROOT,task_id=94,
                  adapter=None,validator=inspect_mp3,space=None,timeout=RENDER_TIMEOUT):
-        self.db=db;self.root=Path(root);self.inventory=Path(inventory);self.source_root=Path(source_root)
+        self.db=db;self.root=require_output_path(root);self.inventory=Path(inventory);self.source_root=Path(source_root)
         _reject_links(self.root);self.root.mkdir(parents=True,exist_ok=True)
         self.task_id=task_id;self.tracker=Tracker(db);self.adapter=adapter or NativeFL(self.root)
         self.validator=validator;self.space=space or (lambda:shutil.disk_usage(self.root).free)
@@ -196,8 +262,7 @@ class MusicRender:
     def folder(self,job):
         for name,length in (('project_id',16),('source_sha256',64),('id',32)):
             if not re.fullmatch('[a-f0-9]{'+str(length)+'}',str(job.get(name,''))):raise ValueError('Malformed render lineage.')
-        result=self.root/'exports'/job['project_id']/job['source_sha256']/job['id'];_reject_links(result)
-        if not result.resolve().is_relative_to(self.root.resolve()):raise ValueError('Render path is outside its output root.')
+        result=require_output_path(self.root/'exports'/job['project_id']/job['source_sha256']/job['id'],within=self.root)
         return result
 
     def save(self,job):
@@ -239,7 +304,7 @@ class MusicRender:
             project=entries[0];source=Path(project['path']);_reject_links(source)
             if not source.resolve().is_relative_to(self.source_root.resolve()) or source.suffix.lower()!='.flp':raise HTTPException(409,'Project path no longer matches the reviewed music root.')
             if self.space()<MIN_FREE_BYTES:raise HTTPException(409,'Keep at least 20 GiB free on the render drive before making a job.')
-            if hash_file(source,MAX_PROJECT_BYTES)!=project['sha256']:raise HTTPException(409,'Source project changed. Refresh its reviewed inventory before rendering.')
+            if checked_hash(source,MAX_PROJECT_BYTES)!=project['sha256']:raise HTTPException(409,'Source project changed. Refresh its reviewed inventory before rendering.')
             with source.open('rb') as stream:
                 if stream.read(4)!=b'FLhd':raise HTTPException(409,'Project does not have a valid FLP header.')
             ident=uuid.uuid4().hex
@@ -252,7 +317,7 @@ class MusicRender:
             folder=self.folder(job);folder.mkdir(parents=True,exist_ok=False);(folder/'audio').mkdir()
             if body.kind=='mp3':
                 with source.open('rb') as src,(folder/'project.flp').open('xb') as dst:shutil.copyfileobj(src,dst,1024*1024)
-                if hash_file(folder/'project.flp',MAX_PROJECT_BYTES)!=project['sha256']:raise HTTPException(409,'Project changed while making the copy; job was not queued.')
+                if checked_hash(folder/'project.flp',MAX_PROJECT_BYTES)!=project['sha256']:raise HTTPException(409,'Project changed while making the copy; job was not queued.')
                 job['copied_project']=str(folder/'project.flp')
             with self.db.connect() as c:
                 c.execute('INSERT INTO music_render_jobs VALUES(?,?,?,?,?,?,?)',
@@ -267,9 +332,12 @@ class MusicRender:
             if job['kind']!='mp3':raise HTTPException(409,STEM_BLOCKER)
             if job['status'] not in {'needs_preflight','ready'}:raise HTTPException(409,'This render needs a new explicit retry before preflight.')
             checks=body.model_dump()
-            job['preflight']={**checks,'basis':'user_reported_copied_project_checks','checked_at':now()}
-            job['copy_sha256']=hash_file(self.folder(job)/'project.flp',MAX_PROJECT_BYTES)
-            ready=all(checks[name] is True for name in ('copied_project_load_checked','missing_assets_resolved','render_settings_checked','user_data_off_c_checked'))
+            job['preflight']={**checks,'storage_policy_version':2,'basis':'user_reported_copied_project_checks','checked_at':now()}
+            job['copy_sha256']=checked_hash(self.folder(job)/'project.flp',MAX_PROJECT_BYTES)
+            ready=all(checks[name] is True for name in ('copied_project_load_checked','missing_assets_resolved','render_settings_checked','user_data_hf_checked','nexen_profile_setup_checked'))
+            if ready and hasattr(self.adapter,'confirm_profile_setup'):
+                try:job['preflight']['profile_setup']=self.adapter.confirm_profile_setup()
+                except (OSError,ValueError,subprocess.SubprocessError):raise HTTPException(409,'Open FL Studio from NEXEN, complete first-run setup in that profile, inspect the copied project and close FL before saving these checks.') from None
             job.update(status='ready' if ready else 'needs_preflight',reason='Ready for one explicit MP3 render.' if ready else 'Complete the missing copied-project checks. No FL process was started.')
             return self.save(job)
 
@@ -279,6 +347,8 @@ class MusicRender:
             if self.active:raise HTTPException(409,'A music render is already active. Wait or cancel it.')
             job=self.get(ident)
             if job['kind']!='mp3' or job['status']!='ready':raise HTTPException(409,'Complete the copied-project preflight before starting this MP3 job.')
+            if job.get('preflight',{}).get('storage_policy_version')!=2 or job['preflight'].get('user_data_hf_checked') is not True or job['preflight'].get('nexen_profile_setup_checked') is not True:
+                raise HTTPException(409,'Review the H:/F:-only storage checks again. The older off-C check is insufficient.')
             lease=SingleWriter(self.root)
             try:lease.__enter__()
             except RuntimeError:raise HTTPException(409,'Another NEXEN music worker is active.') from None
@@ -294,6 +364,9 @@ class MusicRender:
                 response=dict(job)
                 self.future=self.executor.submit(self._run,job,lease)
                 return response
+            except StoragePolicyError as error:
+                self.active=None;lease.__exit__(None,None,None)
+                raise HTTPException(409,str(error)) from None
             except (OSError,ValueError,ImportError,subprocess.SubprocessError) as error:
                 self.active=None;lease.__exit__(None,None,None)
                 raise HTTPException(409,'FL Studio, MP3 validation or Windows process checks are unavailable. Resolve the local prerequisite before starting.') from None
@@ -318,6 +391,7 @@ class MusicRender:
             if hash_file(folder/'project.flp',MAX_PROJECT_BYTES)!=job['copy_sha256']:
                 job.update(status='blocked',reason='Copied project changed immediately before dispatch; no FL process was started.');return
             self.process=self.adapter.launch(folder/'project.flp',folder/'audio')
+            if hasattr(self.adapter,'storage_status'):job['storage_at_launch']=self.adapter.storage_status()
             job.update(render_process_started=True,pid=self.process.pid,reason='FL Studio is rendering the copied project.');self.save(job)
             deadline=time.monotonic()+self.timeout
             while self.process.poll() is None:
@@ -378,7 +452,7 @@ class MusicRender:
             job=self.get(ident)
             if job['status']=='complete':return job
             if job['status']!='rendered' or not body.audible_mix_confirmed:raise HTTPException(409,'A verified MP3 and a full-mix listening confirmation are required.')
-            if hash_file(self.folder(job)/'audio/project.mp3',MAX_AUDIO_BYTES)!=job['output']['sha256']:raise HTTPException(409,'Audio changed since validation. It cannot be accepted under this receipt.')
+            if checked_hash(self.folder(job)/'audio/project.mp3',MAX_AUDIO_BYTES)!=job['output']['sha256']:raise HTTPException(409,'Audio changed since validation. It cannot be accepted under this receipt.')
             job.update(status='complete',reason='Listening copy accepted. This does not complete the entire library or the stem task.',
                        listening_check={'confirmed':True,'basis':'user_reported_full_mix_listen','notes':body.notes,'at':now()})
             self.save(job);self.record(job);return job
@@ -405,6 +479,7 @@ class MusicRender:
                 jobs.append({'id':row['id'],'status':'receipt_unavailable'})
         return {'task_id':self.task_id,'active_job':self.active,'projects':self.projects(),'jobs':jobs,'output_root':str(self.root/'exports'),
                 'inventory_status':self.inventory_status,
+                'storage':self.adapter.storage_status() if hasattr(self.adapter,'storage_status') else {'configured_paths_verified':False,'scope':'Injected adapter; native storage not checked.'},
                 'free_bytes':self.space(),'reserve_bytes':MIN_FREE_BYTES,'fl_executable_exists':FL_EXE.is_file(),
                 'automatic_mp3_adapter':True,'live_mp3_pilot_verified':any(j.get('output',{}).get('stream_verified') for j in jobs if j.get('output')),
                 'stems_automated':False,'stems_blocker':STEM_BLOCKER,'whole_library_inventoried':False,
@@ -452,13 +527,13 @@ def register(app,db):
 PAGE='''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>NEXEN · Music renders</title>
 <style>*{box-sizing:border-box}body{margin:0;background:#071623;color:#e3f3ff;font:16px/1.55 system-ui}main{max-width:1080px;margin:auto;padding:28px}a{color:#8bdbff}h1{font-size:40px;margin-bottom:0}p,small{color:#b0c8db}section,article{background:#102a40;border:1px solid #376782;border-radius:18px;padding:20px;margin:18px 0}button,select,input{font:inherit;border-radius:8px;border:1px solid #598dad;padding:10px;background:#0b2032;color:inherit}button{cursor:pointer;margin:5px}button:disabled{opacity:.5;cursor:wait}label{display:block;margin:10px 0}code{overflow-wrap:anywhere}audio{width:100%}.status{color:#9fe6ff}#notice{min-height:28px}details{margin:14px 0}</style>
 <main><a href="/" target="_top">NEXEN home</a> · <a href="/tasks" target="_top">Task 94 and history</a><h1>Music renders.</h1><p>Make listening copies. Preserve every original project and keep stems separate.</p><p id="notice" role="status">Loading the render queue…</p><p id="error" role="alert"></p>
-<section><h2>Create a project copy</h2><label>Reviewed personal song <select id="project"></select></label><button id="queue">Queue MP3 listening copy</button><button id="stems">Record stem export setup</button><p>Only reviewed song candidates appear here. The rest of the library, backups and templates need a bounded inventory pass.</p></section>
-<section><h2>Before the first render</h2><p>Inspect the job's copied FLP in FL Studio. Resolve missing samples/plugins, check full-song range, tails and MP3 settings, and confirm FL's user-data locations are off C:. Save the original session and close FL before pressing Start.</p><p>Actual bitrate and duration are read from the output. A working MP3 does not prove the intended vocal and effects are present; listen before accepting the mix.</p></section><div id="jobs"></div></main><script>
+<section aria-labelledby="storage-title"><h2 id="storage-title">Saves stay on H: or F:</h2><p id="storage" role="status">Checking configured output and FL user-data folders…</p><p>NEXEN rejects other drives and redirected output folders. Plugin-specific saves and Windows-managed files are outside this path guard.</p></section><section><h2>Create a project copy</h2><label>Reviewed personal song <select id="project"></select></label><button id="queue">Queue MP3 listening copy</button><button id="stems">Record stem export setup</button><p>Only reviewed song candidates appear here. The rest of the library, backups and templates need a bounded inventory pass.</p></section>
+<section><h2>Before the first render</h2><button id="setup-fl">Open FL for profile setup</button><p>This opens FL with the same H: profile used for rendering. Finish any setup or plugin dialogs, then close FL normally. This check is your report of the visible setup; NEXEN cannot infer it from an empty folder.</p><p>Inspect the job's copied FLP in FL Studio. Resolve missing samples/plugins, check full-song range, tails and MP3 settings, and confirm FL and plugin save locations are on H: or F:. Save the original session and close FL before pressing Start.</p><p>Actual bitrate and duration are read from the output. A working MP3 does not prove the intended vocal and effects are present; listen before accepting the mix.</p></section><div id="jobs"></div></main><script>
 const el=id=>document.getElementById(id),esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));let locked=false,signature='';
 async function api(url,body){const r=await fetch(url,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json','X-Nexen-Action':'launch'},body:JSON.stringify(body)});const d=await r.json();if(!r.ok)throw Error(d.detail||'Request failed');return d}
-async function refresh(){if(locked)return;try{const data=await api('/api/music-render/status');if(!el('project').options.length)el('project').innerHTML=data.projects.map(p=>`<option value="${p.id}">${esc(p.title)}</option>`).join('');el('queue').disabled=el('stems').disabled=!data.projects.length;const next=JSON.stringify(data.jobs.map(j=>[j.id,j.status,j.updated_at]));el('notice').textContent=(data.active_job?'One render active. ':'Queue ready. ')+data.jobs.length+' recorded jobs · '+Math.floor(data.free_bytes/1024**3)+' GiB free';if(next===signature)return;signature=next;el('jobs').innerHTML=data.jobs.map(j=>`<article data-id="${j.id}"><h2>${esc(j.title)}</h2><strong class="status">${esc(j.status.replaceAll('_',' '))}</strong><p>${esc(j.reason)}</p><small>Attempt ${j.attempt}/${j.max_attempts} · ${esc(j.kind)} · Task ${j.task_id}</small>${j.copied_project?`<details><summary>Copied project and source identity</summary><code>${esc(j.copied_project)}</code><p>Original SHA-256: ${esc(j.source_sha256)}</p></details>`:''}${['needs_preflight','ready'].includes(j.status)?`<details><summary>Copied-project checks</summary>${[['copied_project_load_checked','The copied project opens correctly'],['missing_assets_resolved','No unresolved samples or plugins'],['render_settings_checked','Full-song MP3 range and export settings checked'],['user_data_off_c_checked','FL user data is configured off C:']].map(([k,t])=>`<label><input type="checkbox" name="${k}" ${j.preflight?.[k]?'checked':''}> ${t}</label>`).join('')}<button data-action="preflight">Save checks</button></details>`:''}${j.status==='ready'?'<button data-action="start">Start one MP3 render</button>':''}${['needs_preflight','ready','rendering','validating'].includes(j.status)?'<button data-action="cancel">Cancel job</button>':''}${['failed','blocked','cancelled','interrupted'].includes(j.status)&&j.kind==='mp3'?'<button data-action="retry">Create a fresh retry copy</button>':''}${j.output?`<p>${Math.round(j.output.duration_seconds)} seconds · ${Math.round(j.output.bitrate_bps/1000)} kbps · ${j.output.sample_rate} Hz</p><audio controls preload="none" src="${esc(j.output.url)}"></audio>${j.status==='rendered'?'<label><input type="checkbox" name="listened"> I listened to the full mix; intended vocals, instruments and effects are present.</label><button data-action="accept">Accept listening copy</button>':''}`:''}</article>`).join('')}catch(e){el('error').textContent=e.message}}
+async function refresh(){if(locked)return;try{const data=await api('/api/music-render/status');const storage=data.storage||{};el('storage').textContent=storage.configured_paths_verified?'Renders: '+storage.output_root+' · FL user data: '+storage.fl_user_data:(storage.blocker||'Storage settings are not verified; rendering is blocked.');if(!el('project').options.length)el('project').innerHTML=data.projects.map(p=>`<option value="${p.id}">${esc(p.title)}</option>`).join('');el('queue').disabled=el('stems').disabled=!data.projects.length;const next=JSON.stringify(data.jobs.map(j=>[j.id,j.status,j.updated_at]));el('notice').textContent=(data.active_job?'One render active. ':'Queue ready. ')+data.jobs.length+' recorded jobs · '+Math.floor(data.free_bytes/1024**3)+' GiB free';if(next===signature)return;signature=next;el('jobs').innerHTML=data.jobs.map(j=>`<article data-id="${j.id}"><h2>${esc(j.title)}</h2><strong class="status">${esc(j.status.replaceAll('_',' '))}</strong><p>${esc(j.reason)}</p><small>Attempt ${j.attempt}/${j.max_attempts} · ${esc(j.kind)} · Task ${j.task_id}</small>${j.copied_project?`<details><summary>Copied project and source identity</summary><code>${esc(j.copied_project)}</code><p>Original SHA-256: ${esc(j.source_sha256)}</p></details>`:''}${['needs_preflight','ready'].includes(j.status)?`<details><summary>Copied-project checks</summary>${[['copied_project_load_checked','The copied project opens correctly'],['missing_assets_resolved','No unresolved samples or plugins'],['render_settings_checked','Full-song MP3 range and export settings checked'],['user_data_hf_checked','FL user data, plugin saves and backups are set to H: or F:'],['nexen_profile_setup_checked','I opened FL with the NEXEN button, finished first-run setup, checked this copied project and closed FL normally']].map(([k,t])=>`<label><input type="checkbox" name="${k}" ${j.preflight?.[k]?'checked':''}> ${t}</label>`).join('')}<button data-action="preflight">Save checks</button></details>`:''}${j.status==='ready'?'<button data-action="start">Start one MP3 render</button>':''}${['needs_preflight','ready','rendering','validating'].includes(j.status)?'<button data-action="cancel">Cancel job</button>':''}${['failed','blocked','cancelled','interrupted'].includes(j.status)&&j.kind==='mp3'?'<button data-action="retry">Create a fresh retry copy</button>':''}${j.output?`<p>${Math.round(j.output.duration_seconds)} seconds · ${Math.round(j.output.bitrate_bps/1000)} kbps · ${j.output.sample_rate} Hz</p><audio controls preload="none" src="${esc(j.output.url)}"></audio>${j.status==='rendered'?'<label><input type="checkbox" name="listened"> I listened to the full mix; intended vocals, instruments and effects are present.</label><button data-action="accept">Accept listening copy</button>':''}`:''}</article>`).join('')}catch(e){el('error').textContent=e.message}}
 async function create(kind){if(locked)return;locked=true;el('error').textContent='';try{await api('/api/music-render/jobs',{project_id:el('project').value,kind,request_key:crypto.randomUUID().replaceAll('-','')})}catch(e){el('error').textContent=e.message}finally{locked=false;refresh()}}
-el('queue').onclick=()=>create('mp3');el('stems').onclick=()=>create('stems');el('jobs').onclick=async e=>{const action=e.target.dataset.action;if(!action||locked)return;const card=e.target.closest('article');let body={};if(action==='preflight')for(const k of ['copied_project_load_checked','missing_assets_resolved','render_settings_checked','user_data_off_c_checked'])body[k]=card.querySelector(`[name="${k}"]`).checked;if(action==='accept')body.audible_mix_confirmed=card.querySelector('[name="listened"]').checked;locked=true;el('error').textContent='';e.target.disabled=true;try{await api('/api/music-render/jobs/'+card.dataset.id+'/'+action,body)}catch(error){el('error').textContent=error.message}finally{locked=false;e.target.disabled=false;refresh()}};refresh();setInterval(refresh,3000);
+el('setup-fl').onclick=async()=>{if(locked)return;locked=true;el('setup-fl').disabled=true;try{const result=await api('/api/pc/launch',{id:'flstudio'});el('notice').textContent=result.message}catch(error){el('error').textContent=error.message}finally{locked=false;el('setup-fl').disabled=false}};el('queue').onclick=()=>create('mp3');el('stems').onclick=()=>create('stems');el('jobs').onclick=async e=>{const action=e.target.dataset.action;if(!action||locked)return;const card=e.target.closest('article');let body={};if(action==='preflight')for(const k of ['copied_project_load_checked','missing_assets_resolved','render_settings_checked','user_data_hf_checked','nexen_profile_setup_checked'])body[k]=card.querySelector(`[name="${k}"]`).checked;if(action==='accept')body.audible_mix_confirmed=card.querySelector('[name="listened"]').checked;locked=true;el('error').textContent='';e.target.disabled=true;try{await api('/api/music-render/jobs/'+card.dataset.id+'/'+action,body)}catch(error){el('error').textContent=error.message}finally{locked=false;e.target.disabled=false;refresh()}};refresh();setInterval(refresh,3000);
 </script></html>'''
 
 class LocalDB:

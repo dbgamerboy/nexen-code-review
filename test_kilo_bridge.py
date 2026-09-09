@@ -17,6 +17,7 @@ from pydantic import ValidationError
 import app_auth
 import kilo_bridge as module
 from task_tracking import TaskCreate
+from test_support import fixture_root
 
 class DB:
     def __init__(self,path):self.path=path
@@ -31,7 +32,7 @@ class DB:
 
 class KiloBridgeTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.temp=tempfile.TemporaryDirectory(dir='H:/NEXEN/temp');self.root=Path(self.temp.name)
+        self.temp=tempfile.TemporaryDirectory(dir=fixture_root());self.root=Path(self.temp.name)
         self.patches=[patch.object(module,'ROOT',self.root),patch.object(module,'JOBS',self.root/'jobs'),
                       patch.object(module,'INSTALL',self.root/'install.json')]
         for p in self.patches:p.start()
@@ -130,6 +131,41 @@ class KiloBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(client.get('/api/kilo/status').status_code,401)
             self.assertEqual(client.post('/api/kilo/prepare',json=self.request().model_dump(),headers={
                 'Origin':'http://127.0.0.1:8788','X-Nexen-Action':'launch','X-Nexen-Service':auth.service_key}).status_code,401)
+
+    async def test_recover_unavailable_receipt_preserves_other_jobs_without_retry(self):
+        broken=self.bridge.prepare(self.request())
+        healthy=self.bridge.prepare(self.request(request_key='b'*32))
+        for receipt in (broken,healthy):
+            receipt['status']='running';self.bridge.record(receipt)
+        (self.root/'jobs'/broken['id']/'receipt.json').write_text('{malformed')
+        self.bridge.recover()
+        self.assertEqual({row['status'] for row in self.db.rows('SELECT status FROM kilo_draft_jobs')},{'interrupted'})
+        self.assertEqual(self.bridge.get(healthy['id'])['status'],'interrupted')
+        with patch.object(self.bridge,'get',side_effect=HTTPException(403,'Fixture denial')):
+            with self.db.connect() as c:c.execute("UPDATE kilo_draft_jobs SET status='running' WHERE id=?",(healthy['id'],))
+            with self.assertRaises(HTTPException) as error:self.bridge.recover()
+            self.assertEqual(error.exception.status_code,403)
+
+    async def test_shutdown_missing_receipt_signals_owned_thread(self):
+        ident='c'*32;self.bridge.active=ident
+        async def finish():
+            while not self.bridge.cancelled.is_set():await asyncio.sleep(.005)
+            self.bridge.active=None
+        worker=asyncio.create_task(finish())
+        with patch.object(self.bridge,'cancel',side_effect=HTTPException(409,'Fixture receipt missing')):
+            await self.bridge.shutdown()
+        await worker
+        self.assertTrue(self.bridge.cancelled.is_set())
+        self.assertIsNone(self.bridge.active)
+
+    async def test_shutdown_does_not_swallow_unrelated_policy_failure(self):
+        self.bridge.active='c'*32
+        try:
+            with patch.object(self.bridge,'cancel',side_effect=HTTPException(403,'Fixture denial')):
+                with self.assertRaises(HTTPException) as error:await self.bridge.shutdown()
+            self.assertEqual(error.exception.status_code,403)
+            self.assertFalse(self.bridge.cancelled.is_set())
+        finally:self.bridge.active=None
 
 class KiloOutputTests(unittest.TestCase):
     def test_only_finished_non_error_draft_is_accepted(self):

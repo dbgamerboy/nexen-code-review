@@ -203,6 +203,7 @@ class HandoffRuntime:
             now=self.clock()
             if not startup and self.last_attempt is not None and now-self.last_attempt<3600:
                 return {'written':False,'reason':'not_due','latest':self.latest()}
+            previous_attempt=self.last_attempt
             self.last_attempt=now
             try:
                 data=self.collect();name='handoff-'+datetime.fromtimestamp(now,timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')+'-'+uuid.uuid4().hex[:12]
@@ -216,6 +217,7 @@ class HandoffRuntime:
                 except (OSError,ValueError):self.last_error='Checkpoint saved; retention needs a local filesystem check.'
                 return {'written':True,'latest':pointer}
             except Exception as error:
+                self.last_attempt=previous_attempt
                 self.health='checkpoint_failed';self.last_error='Checkpoint failed: '+type(error).__name__+'. Previous committed checkpoint was preserved.'
                 return {'written':False,'reason':'write_failed','latest':self.latest()}
 
@@ -237,7 +239,7 @@ class HandoffRuntime:
             self.wake.clear()
             try:await asyncio.wait_for(self.wake.wait(),timeout=self.interval)
             except asyncio.TimeoutError:pass
-            if not self.stopping and self.last_attempt is not None and self.clock()-self.last_attempt>=3600:
+            if not self.stopping and (self.last_attempt is None or self.clock()-self.last_attempt>=3600):
                 await asyncio.to_thread(self.checkpoint)
 
     async def shutdown(self):

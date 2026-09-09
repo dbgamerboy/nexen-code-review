@@ -116,8 +116,11 @@ function invalidateMemory() {
   byId('money-context-status').textContent='Question changed. Retrieve the sources for this request.';
 }
 function chooseTrack(id) {
+  const restoreFocus=byId('money-tracks').contains(document.activeElement);
   state.track=id;state.taskLimit=12;
-  renderTracks();renderTasks();
+  renderTracks();
+  if(restoreFocus) byId('money-tracks').querySelector('[aria-pressed="true"]')?.focus();
+  renderTasks();
   const track=selectedTrack();
   if(track) {
     byId('money-task-track').value=track.id;

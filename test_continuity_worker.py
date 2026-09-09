@@ -167,6 +167,50 @@ class ContinuityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.worker.loop_task)
         self.assertEqual(self.worker.logger.handlers,[])
 
+    async def test_missing_stale_receipt_is_interrupted_without_disabling_recovery(self):
+        ident=self.kilo.add(1,'running',1)
+        with self.db.connect() as c:
+            c.execute('INSERT INTO continuity_receipts(job_id,task_id,owner,state,attempts,claimed_at) VALUES(?,?,?,?,?,?)',
+                      (ident,1,'previous-owner','running',1,module.timestamp()))
+        for status in (404,409):
+            with self.db.connect() as c:c.execute("UPDATE continuity_receipts SET state='running' WHERE job_id=?",(ident,))
+            with patch.object(self.kilo,'get',side_effect=HTTPException(status,'Fixture absent receipt')):
+                self.assertTrue(self.worker.recover_owned())
+            self.assertEqual(self.worker.status()['receipts'][0]['state'],'interrupted')
+        with self.db.connect() as c:c.execute("UPDATE continuity_receipts SET state='running' WHERE job_id=?",(ident,))
+        with patch.object(self.kilo,'get',side_effect=HTTPException(403,'Fixture denial')):
+            with self.assertRaises(HTTPException):self.worker.recover_owned()
+
+    async def test_stuck_adapter_has_bounded_shutdown_and_interrupted_receipt(self):
+        ident=self.kilo.add(1);self.worker.set_enabled(True)
+        async def stuck_start(job_id):
+            self.kilo.active=job_id
+            receipt=self.kilo.get(job_id);receipt.update(status='running',attempts=1);self.kilo.record(receipt)
+            return receipt
+        with patch.object(self.kilo,'start',side_effect=stuck_start), \
+             patch.object(self.kilo,'cancel',side_effect=OSError('Fixture cancellation failure')), \
+             patch.object(module,'SHUTDOWN_WAIT_SECONDS',.06):
+            await self.worker.start()
+            while self.worker.active is None:await asyncio.sleep(.005)
+            await asyncio.wait_for(self.worker.shutdown(),timeout=1)
+        self.assertIsNone(self.worker.loop_task);self.assertIsNone(self.worker.lease)
+        self.assertEqual(self.worker.status()['receipts'][0]['state'],'interrupted')
+        self.assertEqual(self.kilo.active,ident)  # No fabricated adapter completion or foreign lock release.
+        self.kilo.active=None
+
+    async def test_active_cycle_deadline_does_not_retry_or_claim_adapter_finished(self):
+        ident=self.kilo.add(1);self.own_without_loop();self.worker.set_enabled(True)
+        async def stuck_start(job_id):
+            self.kilo.active=job_id
+            receipt=self.kilo.get(job_id);receipt.update(status='running',attempts=1);self.kilo.record(receipt)
+            return receipt
+        with patch.object(self.kilo,'start',side_effect=stuck_start),patch.object(module,'ACTIVE_WAIT_SECONDS',.01):
+            self.assertEqual(await self.worker.cycle(),'adapter_completion_timeout')
+        self.assertEqual(self.worker.status()['receipts'][0]['state'],'interrupted')
+        self.assertEqual(await self.worker.cycle(),'waiting_for_existing_kilo')
+        self.assertEqual(self.kilo.active,ident)
+        self.kilo.active=None
+
 
 class RouteTests(unittest.TestCase):
     def test_auth_origin_and_no_untrusted_payload_action(self):
