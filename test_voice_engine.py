@@ -19,7 +19,7 @@ class VoiceTests(unittest.TestCase):
         recognizer = Mock()
         recognizer.AcceptWaveform.side_effect = [True, False]
         recognizer.Result.return_value = json.dumps({'text':'open the money page', 'result':[{'conf':0.8},{'conf':1.0}]})
-        recognizer.FinalResult.return_value = json.dumps({'text':'show tasks', 'result':[{'conf':0.9}]})
+        recognizer.FinalResult.return_value = json.dumps({'text':'show tasks', 'result':[{'conf':0.9},{'conf':'high'},{'conf':float('nan')},{'conf':-1},{'conf':2}]})
         vosk = SimpleNamespace(KaldiRecognizer=Mock(return_value=recognizer))
         model = object()
         with patch.object(engine, '_load', return_value=(model, vosk)):

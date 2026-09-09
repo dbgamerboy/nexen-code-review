@@ -3,18 +3,185 @@
 This module never runs task text, submits provider work or marks other tasks done.
 The video on /next is a browser-local captioned plan, not a recorded app session.
 """
+import asyncio
+import hashlib
 import json
+import os
 from pathlib import Path
+import re
+import tempfile
+import threading
 from typing import Literal
 from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.concurrency import run_in_threadpool
 
+from storage_policy import StoragePolicyError, require_output_path
 from task_tracking import Tracker, TaskUpdate, now
 
 BASE = Path(__file__).resolve().parent
+VIDEO_ROOT = Path('H:/NEXEN/videos/next')
+MAX_VIDEO_BYTES = 64 * 1024 * 1024
+VIDEO_ID = re.compile(r'^[a-f0-9]{64}$')
+
+
+def validate_webm(data):
+    """Check bounded EBML/DocType/Segment headers; this does not decode frames."""
+    def vint(offset, *, identifier=False):
+        if offset >= len(data) or data[offset] == 0:
+            raise ValueError('Missing EBML integer')
+        first = data[offset]
+        width = 9 - first.bit_length()
+        if width > (4 if identifier else 8) or offset + width > len(data):
+            raise ValueError('Truncated EBML integer')
+        value = int.from_bytes(data[offset:offset + width], 'big')
+        if not identifier:
+            value &= (1 << (7 * width)) - 1
+        return value, offset + width, width
+
+    try:
+        if data[:4] != b'\x1aE\xdf\xa3':
+            raise ValueError('Missing EBML header')
+        size, start, width = vint(4)
+        end = start + size
+        if size == (1 << (7 * width)) - 1 or not 1 <= size <= 4096 or end > len(data):
+            raise ValueError('Invalid EBML header size')
+        cursor, doctype = start, None
+        while cursor < end:
+            element, cursor, _ = vint(cursor, identifier=True)
+            length, cursor, _ = vint(cursor)
+            if cursor + length > end:
+                raise ValueError('Truncated EBML element')
+            if element == 0x4282:
+                if doctype is not None:
+                    raise ValueError('Duplicate document type')
+                doctype = data[cursor:cursor + length]
+            cursor += length
+        if doctype != b'webm' or data[end:end + 4] != b'\x18S\x80g':
+            raise ValueError('Not a WebM segment')
+        size, payload, width = vint(end + 4)
+        unknown = size == (1 << (7 * width)) - 1
+        if payload >= len(data) or (not unknown and (size == 0 or payload + size != len(data))):
+            raise ValueError('Empty or truncated WebM segment')
+    except ValueError:
+        raise HTTPException(415, 'The file is not a supported WebM video header. Generate the video on this page before saving.') from None
+
+
+async def read_video_upload(request):
+    """Read raw bytes with a declared-length check, stream cap and deadline."""
+    for name in ('content-type', 'content-length', 'content-encoding'):
+        if len(request.headers.getlist(name)) > 1:
+            raise HTTPException(400, 'Duplicate upload headers are not supported.')
+    declared = request.headers.get('content-type', '')
+    if len(declared) > 150 or declared.split(';', 1)[0].strip().lower() != 'video/webm':
+        raise HTTPException(415, 'Save the raw generated WebM video with Content-Type video/webm.')
+    if request.headers.get('content-encoding', 'identity').lower() != 'identity':
+        raise HTTPException(415, 'Compressed upload bodies are not supported.')
+    length = request.headers.get('content-length')
+    expected = None
+    if length is not None:
+        if not re.fullmatch(r'[0-9]{1,12}', length):
+            raise HTTPException(400, 'Invalid video upload length.')
+        expected = int(length)
+        if expected > MAX_VIDEO_BYTES:
+            raise HTTPException(413, 'Next-step videos must be 64 MiB or smaller.')
+    data = bytearray()
+    try:
+        async with asyncio.timeout(45):
+            async for chunk in request.stream():
+                if len(data) + len(chunk) > MAX_VIDEO_BYTES:
+                    raise HTTPException(413, 'Next-step videos must be 64 MiB or smaller.')
+                data.extend(chunk)
+    except TimeoutError:
+        raise HTTPException(408, 'Video upload timed out. No video was saved.') from None
+    if not data or (expected is not None and len(data) != expected):
+        raise HTTPException(400, 'The video is empty or its upload length does not match.')
+    return bytes(data)
+
+
+class NextVideos:
+    """NEXEN-owned H/F storage; opaque content IDs never accept caller paths."""
+    def __init__(self, root=None):
+        self.root = require_output_path(root if root is not None else VIDEO_ROOT)
+        self.lock = threading.Lock()
+
+    def path(self, video_id, suffix='.webm'):
+        if not VIDEO_ID.fullmatch(str(video_id)):
+            raise HTTPException(404, 'Saved video not found.')
+        return require_output_path(self.root / (video_id + suffix), within=self.root)
+
+    def atomic_write(self, path, data):
+        path = require_output_path(path, within=self.root)
+        fd, temporary = tempfile.mkstemp(prefix='.next-video-', suffix='.tmp', dir=self.root)
+        try:
+            with os.fdopen(fd, 'wb') as out:
+                out.write(data)
+                out.flush()
+                os.fsync(out.fileno())
+            require_output_path(temporary, within=self.root)
+            require_output_path(path, within=self.root)
+            os.replace(temporary, path)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+
+    def put(self, data, task_id):
+        if len(data) > MAX_VIDEO_BYTES:
+            raise HTTPException(413, 'Next-step videos must be 64 MiB or smaller.')
+        validate_webm(data)
+        video_id = hashlib.sha256(data).hexdigest()
+        with self.lock:
+            root = require_output_path(self.root)
+            root.mkdir(parents=True, exist_ok=True)
+            path = self.path(video_id)
+            duplicate = path.exists()
+            if duplicate:
+                if not path.is_file() or path.stat().st_size != len(data) or hashlib.sha256(path.read_bytes()).hexdigest() != video_id:
+                    raise HTTPException(409, 'The saved video integrity check failed. No existing file was overwritten.')
+            else:
+                self.atomic_write(path, data)
+            receipt_path = self.path(video_id, '.json')
+            if receipt_path.exists():
+                receipt = self.receipt(video_id)
+            else:
+                receipt = dict(id=video_id, sha256=video_id, task_id=task_id, bytes=len(data),
+                               mime='video/webm', saved_at=now(), path=str(path), saved=True,
+                               video_url='/api/next/videos/' + video_id,
+                               receipt_url='/api/next/videos/' + video_id + '/receipt',
+                               kind='captioned_task_plan', actual_app_recording=False,
+                               validation='WebM header and stored byte hash checked; playback is checked in your browser.',
+                               external_upload=False)
+                self.atomic_write(receipt_path, json.dumps(receipt, ensure_ascii=False, indent=2).encode('utf-8'))
+        return dict(video=receipt, duplicate=duplicate)
+
+    def receipt(self, video_id):
+        path = self.path(video_id, '.json')
+        try:
+            if path.stat().st_size > 8192:
+                raise ValueError('Oversized receipt')
+            receipt = json.loads(path.read_text(encoding='utf-8'))
+            if not isinstance(receipt, dict) or receipt.get('id') != video_id or receipt.get('sha256') != video_id:
+                raise ValueError('Invalid receipt')
+            # Construct served paths from the code-owned root, never receipt text.
+            receipt['path'] = str(self.path(video_id))
+            receipt['video_url'] = '/api/next/videos/' + video_id
+            receipt['receipt_url'] = receipt['video_url'] + '/receipt'
+            return receipt
+        except FileNotFoundError:
+            raise HTTPException(404, 'Saved video receipt not found.') from None
+        except (ValueError, TypeError):
+            raise HTTPException(409, 'The saved video receipt needs review.') from None
+
+    def file(self, video_id):
+        receipt = self.receipt(video_id)
+        path = self.path(video_id)
+        if not path.is_file():
+            raise HTTPException(404, 'Saved video file not found.')
+        if not 0 < path.stat().st_size <= MAX_VIDEO_BYTES or path.stat().st_size != receipt.get('bytes'):
+            raise HTTPException(409, 'The saved video size no longer matches its receipt.')
+        return path
 
 # Only these developer-owned mappings can resolve a task to a workspace. Neither
 # its imported title nor next_step may introduce a URL, shell command or adapter.
@@ -24,6 +191,8 @@ WORKSPACES = {
     'photo-vision-jarvis': '/problems', 'photos-life': '/problems',
     'photo-memories': '/problems', 'local-lab': '/lab',
     'music-catalog': '/lab', 'music-releases': '/lab', 'music-social': '/plans',
+    'music-batch-stems': '/music-render',
+    'strict-output-hf': '/storage',
     'wdr-world': '/game', 'wdr-avatar': '/game', 'wdr-cars': '/game',
     'wdr-factory': '/game', 'wdr-music': '/game', 'wdr-store': '/lookbook',
     'wdr-tv': '/game', 'shared-game-pc-actions': '/game',
@@ -66,7 +235,9 @@ class NextSteps:
         try:
             if path.stat().st_size <= 2*1024*1024:
                 payload = json.loads(path.read_text(encoding='utf-8-sig'))
-                self.seeds = {x['key']: x for x in payload.get('tasks', [])
+                tasks = payload.get('tasks', []) if isinstance(payload, dict) else []
+                tasks = tasks if isinstance(tasks, list) else []
+                self.seeds = {x['key']: x for x in tasks
                               if isinstance(x, dict) and isinstance(x.get('key'), str)}
         except (OSError, ValueError, TypeError):
             pass
@@ -219,6 +390,7 @@ class NextSteps:
 def register(app, db):
     from pc_control import validate_request
     flow = NextSteps(db, requirements=lambda: getattr(app.state, 'requirements', None))
+    videos = NextVideos()
 
     def response(value):
         return JSONResponse(value, headers={'Cache-Control': 'no-store'})
@@ -247,5 +419,38 @@ def register(app, db):
     def do(task_id: int, body: ActionBody, request: Request):
         validate_request(request, mutation=True)
         return response(flow.action(flow.task(task_id)))
+
+    @app.post('/api/next/{task_id}/video')
+    async def save_video(task_id: int, request: Request):
+        validate_request(request, mutation=True)
+        # A real saved task is required, but a video never completes that task.
+        flow.tracker.get(task_id)
+        data = await read_video_upload(request)
+        try:
+            result = await run_in_threadpool(videos.put, data, task_id)
+        except (OSError, StoragePolicyError):
+            raise HTTPException(503, 'The approved H/F video folder is unavailable. No fallback drive was used; you can retry this same video.') from None
+        return response(result)
+
+    @app.get('/api/next/videos/{video_id}')
+    def saved_video(video_id: str, request: Request):
+        validate_request(request)
+        try:
+            path = videos.file(video_id)
+        except (OSError, StoragePolicyError):
+            raise HTTPException(503, 'The approved H/F video folder is unavailable.') from None
+        return FileResponse(path, media_type='video/webm', headers={
+            'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
+            'Content-Disposition': 'inline', 'Cross-Origin-Resource-Policy': 'same-origin'})
+
+    @app.get('/api/next/videos/{video_id}/receipt')
+    def video_receipt(video_id: str, request: Request):
+        validate_request(request)
+        try:
+            videos.file(video_id)
+            value = videos.receipt(video_id)
+        except (OSError, StoragePolicyError):
+            raise HTTPException(503, 'The approved H/F video folder is unavailable.') from None
+        return response(value)
 
     return flow

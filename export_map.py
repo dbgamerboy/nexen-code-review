@@ -71,7 +71,7 @@ def scan(roots):
     def error(e):c.execute('INSERT INTO errors VALUES(?,?)',(str(e.filename),str(e)));c.commit()
     for root in roots:
         for folder,dirs,files in os.walk(root,followlinks=False,onerror=error):
-            dirs[:]=[d for d in dirs if d.lower() not in {'.git','node_modules','.venv','$recycle.bin','system volume information'} and not (Path(folder)/d).is_junction() and not (Path(folder)/d).is_symlink()]
+            dirs[:]=[d for d in dirs if d.lower() not in {'.git','node_modules','.venv','$recycle.bin','system volume information'} and not getattr(Path(folder)/d, 'is_junction', lambda: False)() and not (Path(folder)/d).is_symlink()]
             for name in files:
                 seen+=1;p=Path(folder)/name
                 if RX.match(name) or (name.startswith('imported-claude') and p.suffix.lower()=='.json') or p.suffix.lower()=='.zip':inspect(c,p)

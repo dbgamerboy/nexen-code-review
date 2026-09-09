@@ -50,6 +50,7 @@ def write_memory_note(note, text):
 
 
 def register(app, db, photos):
+    from app_lifecycle import register_lifecycle
     busy = asyncio.Lock()
     with db.connect() as c:
         c.execute('''CREATE TABLE IF NOT EXISTS life_analyses(
@@ -62,12 +63,13 @@ def register(app, db, photos):
             if name not in columns:
                 c.execute('ALTER TABLE life_analyses ADD COLUMN '+name+" TEXT NOT NULL DEFAULT ''")
 
-    @app.on_event('startup')
-    def recover_interrupted_analyses():
+    def recover_interrupted_analyses() -> None:
         # Importing app code for a CLI/test must not interrupt the live server's
         # analysis. Recovery belongs to actual application startup only.
         with db.connect() as c:
             c.execute("UPDATE life_analyses SET status='interrupted' WHERE status='running'")
+
+    register_lifecycle(app, startup=recover_interrupted_analyses)
 
     @app.get('/problems', response_class=HTMLResponse)
     def problems():

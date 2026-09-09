@@ -33,6 +33,7 @@ class VoiceTests(unittest.TestCase):
             transport=httpx.ASGITransport(app=app,client=('127.0.0.1',55555))
             async with httpx.AsyncClient(transport=transport,base_url='http://127.0.0.1:8788') as c:
                 self.assertEqual((await c.post('/api/voice/transcribe',content=b'00')).status_code,403)
+                self.assertEqual((await c.post('/api/voice/transcribe',content=b'00',headers={**headers,'Content-Type':'text/plain'})).status_code,415)
                 self.assertEqual((await c.post('/api/voice/transcribe',content=b'0',headers=headers)).status_code,422)
                 self.assertEqual((await c.post('/api/voice/transcribe',content=b'0'*(voice.MAX_BYTES+2),headers=headers)).status_code,413)
                 with patch.object(voice,'engine_status',return_value={'ready':True}),patch.object(voice.importlib,'import_module',return_value=engine):
@@ -41,6 +42,11 @@ class VoiceTests(unittest.TestCase):
                     self.assertEqual(result.json()['command']['type'],'unknown')
                     self.assertFalse(result.json()['audio_saved'])
                     self.assertFalse(result.json()['executed'])
+                    for confidence in (None, True, 'high', float('nan'), float('inf'), 1.1):
+                        engine.transcribe=lambda pcm:dict(text='click five',confidence=confidence)
+                        result=await c.post('/api/voice/transcribe',content=b'00'*1000,headers=headers)
+                        self.assertEqual(result.status_code,200)
+                        self.assertEqual(result.json()['command']['type'],'unknown')
                     engine.transcribe=lambda pcm:dict(text='open money engine',confidence=.96)
                     result=await c.post('/api/voice/transcribe',content=b'00'*1000,headers=headers)
                     self.assertEqual(result.json()['command']['path'],'/money')

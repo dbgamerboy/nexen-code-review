@@ -11,10 +11,14 @@ STAGES = (
 
 
 def flow_for(packet):
+    packet = packet if isinstance(packet, dict) else {}
+    pool = packet.get('pool')
+    label = pool.get('label') if isinstance(pool, dict) else None
     citations = packet.get('citations', [])
+    citations = [item for item in citations if isinstance(item, dict)] if isinstance(citations, list) else []
     return {
         'version': 1,
-        'subject': packet.get('pool', {}).get('label', 'All knowledge'),
+        'subject': label if isinstance(label, str) and label.strip() else 'All knowledge',
         'evidence_status': packet.get('data_sufficiency', 'unknown'),
         'stages': [dict(id=ident, label=label, tooltip=tip,
                         status=('ready' if ident == 'context' else

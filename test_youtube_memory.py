@@ -13,8 +13,9 @@ import httpx
 from pydantic import ValidationError
 
 from memory_bridge import SharedMemory
+from test_support import fixture_root
 from youtube_memory import (YouTubeMemory, SourceBody, RunBody, CaptionUnavailable, canonical_url,
-                            caption_url, normalize_segments, compile_prompt, validate_draft, register, sha, fetch_captions)
+                            caption_url, normalize_segments, compile_prompt, validate_draft, register, sha, fetch_captions, local_draft)
 
 
 URL='https://www.youtube.com/watch?v=w0S-khYCaB4'
@@ -42,25 +43,28 @@ class DB:
 
 class YouTubeMemoryTests(unittest.TestCase):
     def setUp(self):
-        self.temp=tempfile.TemporaryDirectory()
+        self.temp=tempfile.TemporaryDirectory(dir=fixture_root(),prefix='youtube-memory-')
+        self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name)
         self.db=DB(self.root/'test.sqlite3')
         self.calls=[]
         self.worker=self.make_worker()
-    def tearDown(self):self.temp.cleanup()
     def make_worker(self,**kwargs):
         return YouTubeMemory(self.db,root=self.root/'sources',background=False,model_gate=lambda:None,**kwargs)
     def ready(self,text='[00:03] Build modular context memory.\n[01:20] Test the proposed workflow.'):
         item=self.worker.create({'url':URL,'title':'Fixture tutorial','transcript':text})
         return self.worker.process(item['id'])
-    def output(self,prompt,model):
+    def output(self,prompt,model,profile=None,source_refs=None):
         self.calls.append((prompt,model))
         return json.dumps({'title':'Context guide','summary':'A local draft','steps':[{'title':'Read context','instruction':'Review the context file.','source_refs':['s1'],'required_adapter':'shell','execution_status':'completed'}],'blockers':[]})
 
     def test_url_and_caption_ssrf_allowlists(self):
         self.assertEqual(canonical_url('https://youtu.be/w0S-khYCaB4?t=5')[0],URL)
         self.assertEqual(canonical_url('https://m.youtube.com/shorts/w0S-khYCaB4')[0],URL)
-        for bad in ['http://youtu.be/w0S-khYCaB4','https://youtube.com.evil.test/watch?v=w0S-khYCaB4','https://LOCAL_EMAIL_REDACTED/watch?v=w0S-khYCaB4','https://127.0.0.1/watch?v=w0S-khYCaB4','https://youtube.com/watch?v=w0S-khYCaB4&v=XXXXXXXXXXX','https://youtube.com/playlist?list=x','https://youtu.be/w0S-khYCaB4/x']:
+        for authority in ('user'+'@'+'youtube.com', 'user:password'+'@'+'youtube.com', 'youtube.com:444'):
+            with self.assertRaises(ValueError):
+                canonical_url('https://'+authority+'/watch?v=w0S-khYCaB4')
+        for bad in ['http://youtu.be/w0S-khYCaB4','https://youtube.com.evil.test/watch?v=w0S-khYCaB4','https://review-e482ff896d243447@example.invalid/watch?v=w0S-khYCaB4','https://127.0.0.1/watch?v=w0S-khYCaB4','https://youtube.com/watch?v=w0S-khYCaB4&v=XXXXXXXXXXX','https://youtube.com/playlist?list=x','https://youtu.be/w0S-khYCaB4/x']:
             with self.assertRaises(ValueError):canonical_url(bad)
         for bad in ['https://evil.test/api/timedtext','http://youtube.com/api/timedtext','https://youtube.com/redirect?q=http://127.0.0.1']:
             with self.assertRaises(CaptionUnavailable):caption_url(bad)
@@ -127,6 +131,22 @@ class YouTubeMemoryTests(unittest.TestCase):
         self.assertEqual(len(self.calls),1)
         _,chosen=compile_prompt(source,'guide')
         with self.assertRaises(ValueError):validate_draft({'steps':[{'instruction':'Guess','source_refs':['s999']}]},source,'guide','fixture',chosen)
+
+    def test_final_guide_validation_enforces_five_steps_without_limiting_workflows(self):
+        source=self.ready();_,chosen=compile_prompt(source,'guide')
+        def draft(size):
+            return {'steps':[{'instruction':'Review the cited source.','source_refs':['s1']} for _ in range(size)]}
+        guide=validate_draft(draft(5),source,'guide','fixture',chosen)
+        self.assertEqual(len(guide['steps']),5)
+        self.assertTrue(all(step['execution_status']=='not_executed' for step in guide['steps']))
+        with self.assertRaisesRegex(ValueError,'1 to 5 source-cited steps'):
+            validate_draft(draft(6),source,'guide','fixture',chosen)
+        self.assertEqual(len(validate_draft(draft(16),source,'workflow','fixture',chosen)['steps']),16)
+        with self.assertRaisesRegex(ValueError,'1 to 16 source-cited steps'):
+            validate_draft(draft(17),source,'workflow','fixture',chosen)
+        broken=draft(1);broken['steps'][0]['source_refs']=['unseen']
+        with self.assertRaisesRegex(ValueError,'missing or unseen'):
+            validate_draft(broken,source,'guide','fixture',chosen)
 
     def test_compile_cancel_and_pause_preserve_source(self):
         source=self.ready();worker=self.make_worker(generator=self.output)
@@ -200,6 +220,66 @@ class YouTubeMemoryTests(unittest.TestCase):
         self.assertEqual(kwargs['timeout'],90)
         self.assertEqual(result['segments'][0]['text'],'Fixture caption')
         self.assertEqual(len(result['raw_capture_sha256']),64)
+
+    def test_guide_profile_bounds_real_ollama_request(self):
+        source=self.ready('\n'.join('Context memory statement '+str(i)+' '+('evidence '*20) for i in range(250)))
+        prompt,chosen=compile_prompt(source,'guide')
+        self.assertLessEqual(len(prompt),7500,'Guide request must fit its compact local-model context.')
+        self.assertLess(len(chosen),len(source['segments']))
+        captured=[]
+        def respond(request):
+            if request.url.path=='/api/tags':return httpx.Response(200,json={'models':[{'name':'fixture:small'}]})
+            captured.append(json.loads(request.content))
+            return httpx.Response(200,json={'message':{'content':'{"title":"Small guide","steps":[]}'}})
+        client=httpx.Client(transport=httpx.MockTransport(respond))
+        with patch('youtube_memory.httpx.Client',return_value=client):
+            local_draft(prompt,'fixture:small',profile='guide',source_refs=[x['id'] for x in chosen])
+        request=captured[0]
+        self.assertEqual(request['options']['num_ctx'],4096)
+        self.assertEqual(request['options']['num_predict'],600)
+        self.assertFalse(request['think'])
+        self.assertFalse(request['stream'])
+
+    def test_local_model_uses_required_citation_schema(self):
+        source=self.ready()
+        prompt,chosen=compile_prompt(source,'guide')
+        captured=[]
+        def respond(request):
+            if request.url.path=='/api/tags':return httpx.Response(200,json={'models':[{'name':'fixture:small'}]})
+            captured.append(json.loads(request.content))
+            return httpx.Response(200,json={'message':{'content':'{}'}})
+        client=httpx.Client(transport=httpx.MockTransport(respond))
+        with patch('youtube_memory.httpx.Client',return_value=client):local_draft(prompt,'fixture:small',profile='guide',source_refs=[x['id'] for x in chosen])
+        schema=captured[0]['format']
+        self.assertIsInstance(schema,dict,'JSON syntax alone does not ensure required source citations.')
+        step=schema['properties']['steps']['items']
+        self.assertIn('source_refs',step['required'])
+        self.assertEqual(step['properties']['source_refs']['items']['enum'],[x['id'] for x in chosen])
+
+    def test_malformed_model_response_is_controlled_value_error(self):
+        for payload in ([], None, 'text', {'message': []}, {'message': None},
+                        {'message': 'text'}, {'message': {'content': 123}},
+                        {'message': {'content': ''}}, {'message': {'content': 'x' * 24001}}):
+            with self.subTest(payload_type=type(payload).__name__):
+                def respond(request):
+                    data = {'models': [{'name': 'fixture:small'}]} if request.url.path == '/api/tags' else payload
+                    return httpx.Response(200, content=json.dumps(data), headers={'Content-Type': 'application/json'})
+                client = httpx.Client(transport=httpx.MockTransport(respond))
+                with patch('youtube_memory.httpx.Client', return_value=client):
+                    with self.assertRaisesRegex(ValueError, 'bounded draft'):
+                        local_draft('Fixture source', 'fixture:small', source_refs=['s1'])
+
+    def test_malformed_model_catalog_is_rejected_before_chat(self):
+        for payload in ([], None, {'models': None}, {'models': {}}):
+            calls = []
+            def respond(request):
+                calls.append(request.url.path)
+                return httpx.Response(200, content=json.dumps(payload), headers={'Content-Type': 'application/json'})
+            client = httpx.Client(transport=httpx.MockTransport(respond))
+            with patch('youtube_memory.httpx.Client', return_value=client):
+                with self.assertRaisesRegex(ValueError, 'model list'):
+                    local_draft('Fixture source', 'fixture:small', source_refs=['s1'])
+            self.assertEqual(calls, ['/api/tags'])
 
 
 if __name__=='__main__':unittest.main()

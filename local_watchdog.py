@@ -4,6 +4,8 @@ No model prompts, billing, arbitrary commands or process termination. Windows mu
 be awake and this user's session available; Startup launches this after login.
 """
 from __future__ import annotations
+import sys
+sys.dont_write_bytecode = True
 import argparse
 import ctypes
 import hashlib
@@ -13,7 +15,6 @@ import logging.handlers
 import os
 import socket
 import subprocess
-import sys
 import threading
 import time
 import urllib.error
@@ -21,10 +22,12 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from file_census import SingleWriter
+from storage_policy import require_output_path, tool_environment
 
 BASE = Path(__file__).resolve().parent
 DATA = BASE / "data"
 STATE = DATA / "watchdog"
+SERVICE_ROOT = Path('H:/NEXEN/services')
 # Use the interpreter that bootstrapped this watchdog. During the F: migration
 # the verified D: venv supplies dependencies; all app code and state remain on F:.
 PYTHONW = Path(sys.executable).with_name("pythonw.exe")
@@ -44,7 +47,8 @@ def read_json(path):
 
 
 def atomic_json(path, data):
-    temp = path.with_suffix(".json.tmp")
+    path = require_output_path(path)
+    temp = require_output_path(path.with_suffix(".json.tmp"), within=path.parent)
     temp.write_text(json.dumps(data, indent=2), encoding="utf-8")
     os.replace(temp, path)
 
@@ -106,7 +110,7 @@ def hub_listening():
 
 
 def census_locked():
-    path = DATA / "census"
+    path = require_output_path(DATA / "census")
     path.mkdir(parents=True, exist_ok=True)
     try:
         with SingleWriter(path):
@@ -116,11 +120,13 @@ def census_locked():
 
 
 def logger_for(name, directory):
+    directory = require_output_path(directory)
+    logfile = require_output_path(directory / (name + '.log'), within=directory)
     logger = logging.getLogger(name)
     logger.setLevel(logging.INFO)
     logger.propagate = False
     if not logger.handlers:
-        handler = logging.handlers.RotatingFileHandler(directory / (name + ".log"), maxBytes=LOG_LIMIT, backupCount=2, encoding="utf-8")
+        handler = logging.handlers.RotatingFileHandler(logfile, maxBytes=LOG_LIMIT, backupCount=2, encoding="utf-8")
         handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
         logger.addHandler(handler)
     return logger
@@ -146,11 +152,11 @@ def capture_output(process, logger):
 class Watchdog:
     def __init__(self, directory=STATE, request=hub_request, listening=hub_listening,
                  spawn=subprocess.Popen, locked=census_locked, now=time.time):
-        self.directory = Path(directory)
+        self.directory = require_output_path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.status_path = self.directory / "status.json"
         self.request, self.listening, self.spawn, self.locked, self.now = request, listening, spawn, locked, now
-        self.log = logger_for("watchdog-" + hashlib.sha1(str(directory).encode()).hexdigest()[:8], self.directory)
+        self.log = logger_for("watchdog-" + hashlib.sha256(str(directory).encode()).hexdigest()[:8], self.directory)
         old = read_json(self.status_path)
         self.launch_history = old.get("launch_history", {"hub": [], "census": []})
         self.last_digest = old.get("last_digest_at_unix", 0)
@@ -179,19 +185,24 @@ class Watchdog:
             "hub": [str(PYTHONW), str(BASE / "nexen.py"), "serve"],
             "census": [str(PYTHONW), str(BASE / "file_census.py"), "--root", "F:\\", "--once"],
         }
+        if target not in commands:
+            raise ValueError('Unknown fixed watchdog target.')
         if not self.allowed(target):
             return None
         self.launch_history.setdefault(target, []).append(self.now())
         # Persist attempted launches before spawn, so repeated crashes keep the ceiling.
         self.save()
         try:
-            process = self.spawn(commands[target], cwd=str(BASE), stdin=subprocess.DEVNULL,
+            # Each local child gets owned H/F cache/profile paths, even if this
+            # watchdog was invoked directly rather than through a wrapper.
+            environment = tool_environment(SERVICE_ROOT / target)
+            process = self.spawn(commands[target], cwd=str(require_output_path(BASE)), env=environment, stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             capture_output(process, logger_for("child-" + target, self.directory))
             self.log.info("Started fixed target %s, launcher PID %s", target, process.pid)
             return process
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             self.log.error("Launch %s failed: %s", target, type(exc).__name__)
             self.state["last_error"] = f"{target}: {type(exc).__name__}"
             return None
@@ -206,7 +217,7 @@ class Watchdog:
         atomic_json(self.status_path, self.state)
 
     def pause_census(self, paused):
-        marker = DATA / "census" / "PAUSE"
+        marker = require_output_path(DATA / "census" / "PAUSE")
         owned_text = "watchdog:global-pause"
         marker.parent.mkdir(parents=True, exist_ok=True)
         if paused and not marker.exists():
@@ -299,7 +310,9 @@ def main():
     if args.status:
         print(json.dumps(read_json(STATE / "status.json"), indent=2))
         return
-    STATE.mkdir(parents=True, exist_ok=True)
+    require_output_path(STATE)
+    os.environ.update(tool_environment(SERVICE_ROOT / 'watchdog'))
+    require_output_path(STATE).mkdir(parents=True, exist_ok=True)
     try:
         with WindowsMutex():
             watchdog = Watchdog()

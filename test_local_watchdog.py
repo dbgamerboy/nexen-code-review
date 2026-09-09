@@ -7,7 +7,16 @@ from unittest.mock import patch
 import local_watchdog as module
 
 TEST_ROOT = module.BASE / "work" / "watchdog-tests"
-TEST_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+def setUpModule():
+    global TEST_ROOT, _test_root
+    _test_root = tempfile.TemporaryDirectory(prefix='watchdog-tests-')
+    TEST_ROOT = Path(_test_root.name)
+
+
+def tearDownModule():
+    _test_root.cleanup()
 
 
 class Process:

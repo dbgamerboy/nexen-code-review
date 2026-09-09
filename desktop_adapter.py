@@ -228,7 +228,7 @@ class Adapter:
         with self.lock:
             if action not in ('move', 'click'):
                 raise HTTPException(404, 'Unknown mouse action')
-            if not self.token or not hmac.compare_digest(self.token, body.token) or self.clock() >= self.expires:
+            if not self.token or not hmac.compare_digest(self.token.encode('utf-8'), body.token.encode('utf-8')) or self.clock() >= self.expires:
                 if self.token and self.clock() >= self.expires: self.reset()
                 raise HTTPException(409, 'Arm this page again; its mouse session is missing or expired.')
             if self.actions >= 20:

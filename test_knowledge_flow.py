@@ -22,5 +22,18 @@ class KnowledgeFlowTests(unittest.TestCase):
         for expected in ['source IDs','transcription is missing','observable completion check','cannot execute tools']:
             self.assertIn(expected,instructions)
 
+    def test_malformed_optional_containers_cannot_crash_or_claim_sources(self):
+        for packet in (None, [], 'bad', {'pool': None, 'citations': None},
+                       {'pool': [], 'citations': 2}, {'pool': 'life', 'citations': 'not sources'},
+                       {'pool': {'label': []}, 'citations': {'source_id':'not a list'}}):
+            with self.subTest(packet=packet):
+                flow = flow_for(packet)
+                self.assertEqual(flow['subject'], 'All knowledge')
+                self.assertEqual(flow['source_count'], 0)
+                self.assertEqual(next(s for s in flow['stages'] if s['id']=='knowledge')['status'], 'no_matching_sources')
+        flow = flow_for({'pool': {'label':'Music'}, 'citations':[None, 'bad', {'source_id':'a1'}]})
+        self.assertEqual(flow['source_count'], 1)
+        self.assertEqual(flow['subject'], 'Music')
+
 
 if __name__=='__main__':unittest.main()

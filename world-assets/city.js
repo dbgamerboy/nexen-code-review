@@ -1,6 +1,7 @@
 import * as THREE from '/vendor/three.module.js';
 import {taskWorkIntent} from '/world-assets/workspace-shell.js';
 import {mountTaskScene} from '/world-assets/task-scene.js';
+import {mountMoneyDistrict,isMoneyRegion} from '/world-assets/game-money.js';
 
 // Original local geometry. Stations read NEXEN; exploration rewards are game XP only.
 const $ = (id) => document.getElementById(id);
@@ -12,6 +13,7 @@ let cameraYaw = 0, cameraPitch = .32, cameraDistance = 11, dragging = false;
 let last = performance.now(), elapsed = 0, step = 0, hudClock = 0, drawerOpen = false;
 let workspaceOpen = false, taskActivity = null, statusBusy = false;
 let taskSceneProp = null, taskSceneDispose = null;
+let moneyDistrict = null;
 let ambientMotion = !matchMedia('(prefers-reduced-motion: reduce)').matches;
 let noticeTimer, selectedTrack = null;
 const player = new THREE.Vector3(-2, 0, 34), cameraTarget = player.clone();
@@ -120,7 +122,10 @@ function city(){
   for(const x of [-53,53])for(const z of [-42,0,40,65,91])tree(x,z);
   for(const z of [38,46]){box(-23,0,z,5,.65,1.1,0x29485b);box(-23,.7,z+.4,5,.65,.2,0x486b7e);}
   for(const x of [-110,110])box(x,0,0,.4,1,220,0x96bac6,scene,true);
-  for(const z of [-110,110])box(0,0,z,220,1,.4,0x96bac6,scene,true);
+  box(0,0,-110,220,1,.4,0x96bac6,scene,true);
+  // South avenue joins the business district; the rest of the central boundary stays solid.
+  for(const x of [-60,60])box(x,0,110,100,1,.4,0x96bac6,scene,true);
+  sign('DA MONEY',0,7,112,16,3,'#a8e7ff','YOUR BUSINESSES / DRIVE SOUTH');
   // Original abstract WDR landmark.
   const monument=new THREE.Mesh(new THREE.TorusKnotGeometry(2.1,.43,60,8),material(0x70cfff,true));monument.position.set(20,5,30);scene.add(monument);animated.push({object:monument,base:5});
   cylinder(20,.1,30,3.3,.65,0x234963);
@@ -217,7 +222,7 @@ function makeCar(x,z,color,rotation=0){
 }
 
 function blocked(x,z,r,ignoreCar=null){
-  if(Math.abs(x)>108-r||Math.abs(z)>108-r)return true;
+  if((Math.abs(x)>108-r||Math.abs(z)>108-r)&&!isMoneyRegion(x,z,r))return true;
   if(colliders.some(b=>Math.hypot(x-clamp(x,b.x-b.w/2,b.x+b.w/2),z-clamp(z,b.z-b.d/2,b.z+b.d/2))<r))return true;
   return cars.some(car=>car!==ignoreCar&&Math.hypot(x-car.group.position.x,z-car.group.position.z)<r+1.4);
 }
@@ -243,9 +248,19 @@ function openParent(view){
   return false;
 }
 function mainLink(view,label='Open main GUI'){return '<a class="route-link" href="/#'+encodeURIComponent(view)+'">'+escapeHTML(label)+' ↗</a>';}
-function directory(){
-  panel('Choose your next stop','<p>Walk or drive to the glowing terminals. You can also jump to any station below.</p><span class="badge">Original playable city · local NEXEN connections</span><div class="stationlist">'+stations.map(s=>'<button data-travel="'+s.id+'">'+escapeHTML(s.name)+'<small>Fast travel to station ↗</small></button>').join('')+'</div><p>WASD walks relative to the camera. Drag the city to orbit. Enter the nearby car with E; accelerate with W, steer with A/D, brake with Space.</p><p>Exploration XP is saved in this browser. It does not represent earnings or work completed.</p>');
-  $('drawer').querySelectorAll('[data-travel]').forEach(b=>b.onclick=()=>{const s=stations.find(s=>s.id===b.dataset.travel);if(activeCar){activeCar.speed=0;activeCar=null;avatar.visible=true;}player.set(s.x+2.2,0,s.z+3);cameraYaw=0;cameraTarget.copy(player);closeDrawer();toast(s.name+' · walk onto the glowing terminal and press E');});
+function directory(options={}){
+  panel('Choose your next stop','<p>Walk or drive south to Da Money, or fast travel to a saved business. Buildings read the same tasks as Money Engine.</p><input id="station-filter" aria-label="Find a station or business" placeholder="Find your business or station…"><label><input id="business-only" type="checkbox" style="width:auto"> Businesses only</label><p id="station-count" class="hint"></p><div id="station-results" class="stationlist"></div><button id="station-more" class="toolbutton">Show more</button><p>WASD walks relative to the camera. E opens a terminal or enters a car. Space brakes. Exploration XP does not represent earnings or completed work.</p>');
+  $('business-only').checked=options.businessOnly===true;
+  let shown=30;
+  function render(){
+    const query=$('station-filter').value.toLocaleLowerCase(),businessOnly=$('business-only').checked;
+    const found=stations.filter(s=>(!businessOnly||s.moneyBuilding)&&s.name.toLocaleLowerCase().includes(query));
+    $('station-count').textContent=found.length+' stops · '+Math.min(shown,found.length)+' shown'+(moneyDistrict?.getState().stale?' · business connection unavailable':'');
+    $('station-results').innerHTML=found.slice(0,shown).map(s=>'<button data-travel="'+escapeHTML(s.id)+'">'+escapeHTML(s.name)+'<small>'+escapeHTML(s.moneyBuilding?s.detail:'Fast travel to station')+'</small></button>').join('');
+    $('station-more').hidden=shown>=found.length;
+    $('station-results').querySelectorAll('[data-travel]').forEach(b=>b.onclick=()=>{const s=stations.find(s=>s.id===b.dataset.travel);if(!s)return;if(activeCar){activeCar.speed=0;activeCar=null;avatar.visible=true;}player.set(s.x+2.2,0,s.z+3);cameraYaw=0;cameraTarget.copy(player);closeDrawer();toast(s.name+' · walk onto the terminal and press E');});
+  }
+  $('station-filter').oninput=()=>{shown=30;render();};$('business-only').onchange=()=>{shown=30;render();};$('station-more').onclick=()=>{shown+=30;render();};$('station-results').refresh=render;render();
 }
 async function memory(){
   if(openParent('memory'))return;
@@ -320,6 +335,7 @@ async function music(){
 }
 function station(s){
   visited(s.id);
+  if(s.moneyBuilding)return moneyDistrict?.openStation(s);
   if(s.id==='memory')return memory();if(s.id==='requests')return factory();if(s.id==='wardrobe')return wardrobe();if(s.id==='music')return music();if(s.id==='next')return nextTasks();
   if(openParent(s.id))return;
   panel(s.name,'<p>'+escapeHTML(s.detail)+'</p>'+(s.id==='store'?'<p><a href="/money" target="_blank" rel="noopener">Open Money Engine</a> · <a href="/lookbook" target="_blank" rel="noopener">WDR lookbook</a> · <a href="/connections" target="_blank" rel="noopener">Required setup</a></p>':'')+mainLink(s.id,'Open '+s.name)+(s.id==='store'?'<p>Lumipaw ads remain stopped until checkout, an ad account, and launch readiness are configured. Authorized test ceiling: $50 total, with a $50/day maximum. This station does not spend money.</p>':''));
@@ -346,11 +362,13 @@ function updateNearby(){
   else if(nearby){prompt.querySelector('strong').textContent=nearby.car?'E · Drive WDR Mini Rover':'E · '+nearby.name;prompt.querySelector('small').textContent=nearby.car?'Your ride through WDR City':'Open this NEXEN station';}
   $('movement').textContent=activeCar?'ARCADE DRIVING · WDR MINI ROVER':(keys.has('shift')?'SPRINTING · SHIFT':'ON FOOT · HOLD SHIFT TO SPRINT');$('speed').hidden=!activeCar;
   if(activeCar)$('speed').innerHTML=Math.round(Math.abs(activeCar.speed)*3.6)+'<i>KM/H</i>';
-  $('district').textContent=p.z<-55?'WDR Creative District':p.z>45?'Supply & Commerce':p.x>15?'NEXEN Factory District':p.x<-15?'WDR Knowledge Quarter':'WDR Central';
+  $('district').textContent=p.z>120?'Da Money · your business district':p.z<-55?'WDR Creative District':p.z>45?'Supply & Commerce':p.x>15?'NEXEN Factory District':p.x<-15?'WDR Knowledge Quarter':'WDR Central';
 }
 function updateMap(){
   const ctx=$('minimap').getContext('2d'),w=300,h=256;ctx.clearRect(0,0,w,h);ctx.fillStyle='#0b1c2e';ctx.fillRect(0,0,w,h);
-  const scale=1.12,toX=x=>w/2+x*scale,toZ=z=>h/2+z*scale;
+  const inBusiness=player.z>120, scale=inBusiness?.8:1.12;
+  const toX=x=>w/2+(x-(inBusiness?player.x:0))*scale,toZ=z=>h/2+(z-(inBusiness?player.z:0))*scale;
+  $('map-caption').textContent=inBusiness?'DA MONEY / LOCAL AREA / NORTH ↑':'WDR CENTRAL / NORTH ↑';
   ctx.fillStyle='#244257';for(const x of [-66,0,66])ctx.fillRect(toX(x-8.5),0,17*scale,h);for(const z of [-58,21,77])ctx.fillRect(0,toZ(z-8),w,16*scale);
   ctx.fillStyle='#3b5c70';for(const b of buildings)ctx.fillRect(toX(b.x-b.w/2),toZ(b.z-b.d/2),b.w*scale,b.d*scale);
   ctx.fillRect(toX(-47),toZ(-22),34*scale,24*scale);
@@ -424,6 +442,7 @@ function frame(time){
   camera.lookAt(cameraTarget.x,activeCar?1.1:1.4,cameraTarget.z);
   if(ambientMotion)for(const item of animated){item.object.rotation.y+=dt*.65;item.object.position.y=item.base+Math.sin(elapsed*1.8)*.14;}
   if(hudClock>.12){updateNearby();updateMap();hudClock=0;}
+  moneyDistrict?.update(time);
   renderer.render(scene,camera);
 }
 function boot(){
@@ -434,9 +453,10 @@ function boot(){
     renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;$('world').append(renderer.domElement);
     scene.add(new THREE.HemisphereLight(0xc9ecff,0x406a84,2.4));const sun=new THREE.DirectionalLight(0xe2f3ff,2.8);sun.position.set(-35,75,25);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);Object.assign(sun.shadow.camera,{left:-65,right:65,top:65,bottom:-65,near:1,far:160});sun.shadow.bias=-.0007;sun.shadow.normalBias=.05;scene.add(sun);
     city();avatar=createAvatar();makeCar(4,35,0x65bbd6);makeCar(-65,4,0xc594df,Math.PI);makeCar(66,-44,0xe8c38a,0);makeCar(10,88,0x91d7b4,Math.PI);
+    moneyDistrict=mountMoneyDistrict({THREE,scene,stations,colliders,buildings,player,panel,drawer:$('drawer'),directory,onUpdated:()=>$('station-results')?.refresh?.()});
     controls();resize();$('xp').textContent=visits.size*25+' exploration XP';$('loader').remove();refreshStatus();setInterval(refreshStatus,30000);requestAnimationFrame(frame);
     // Read-only state makes the running simulation inspectable without giving it PC command authority.
-    window.WDRWorld=Object.freeze({getState:()=>({mode:activeCar?'driving':'walking',position:{x:player.x,z:player.z},stations:stations.map(({id,name,x,z})=>({id,name,x,z})),explorationXP:visits.size*25,taskActivity:taskActivity?{...taskActivity}:null,nearby:nearby?.id||(nearby?.car?'car':null)})});
+    window.WDRWorld=Object.freeze({getState:()=>({mode:activeCar?'driving':'walking',position:{x:player.x,z:player.z},stations:stations.map(({id,name,x,z})=>({id,name,x,z})),explorationXP:visits.size*25,taskActivity:taskActivity?{...taskActivity}:null,money:moneyDistrict?.getState(),nearby:nearby?.id||(nearby?.car?'car':null)})});
   }catch(err){
     $('loader')?.remove();const failure=document.createElement('div');failure.className='error';failure.innerHTML='<div><div class="eyebrow">WDR CITY</div><h1>The 3D renderer could not start.</h1><p>This world needs WebGL 2 and browser graphics acceleration.</p><p>'+escapeHTML(err.message)+'</p><a href="/">Open the NEXEN main GUI ↗</a></div>';document.body.append(failure);console.error(err);
   }

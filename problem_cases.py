@@ -369,18 +369,13 @@ class Cases:
 
 
 def register(app, db, photos):
+    from app_lifecycle import register_lifecycle
     cases = Cases(db, photos)
 
     def response(value):
         return JSONResponse(value, headers={'Cache-Control': 'no-store'})
 
-    @app.on_event('startup')
-    def recover():
-        cases.recover()
-
-    @app.on_event('shutdown')
-    async def stop_worker():
-        await cases.shutdown()
+    register_lifecycle(app, startup=cases.recover, shutdown=cases.shutdown)
 
     @app.get('/problem-cases', response_class=HTMLResponse)
     def page(request: Request):

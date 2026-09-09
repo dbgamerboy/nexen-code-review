@@ -23,6 +23,20 @@ class RequestText(BaseModel):
 class AutonomyMode(BaseModel):
     paused:bool
 
+def mount_available_assets(app, prefix, directory, name):
+    """Keep missing optional assets from preventing access to setup pages."""
+    if Path(directory).is_dir():
+        app.mount(prefix, StaticFiles(directory=directory), name=name)
+        return True
+    return False
+
+
+def save_digest(report, path):
+    """Persist the generated digest even before the data directory exists."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, indent=2), encoding='utf-8')
+
 def register(app,db,sup):
     from app_auth import register as register_auth
     auth_gate = register_auth(app)
@@ -92,6 +106,16 @@ def register(app,db,sup):
     register_task_scene(app,db)
     from agentic_os import register as register_agentic_os
     register_agentic_os(app,db)
+    from v1_readiness import register as register_v1_readiness
+    app.state.readiness = register_v1_readiness(app,db)
+    from kilo_bridge import register as register_kilo
+    app.state.kilo = register_kilo(app,db)
+    from continuity_worker import register as register_continuity
+    app.state.continuity = register_continuity(app,db,app.state.kilo,app.state.automatic_mode)
+    from handoff_runtime import register as register_handoff
+    app.state.handoff = register_handoff(app,db)
+    from agents_console import register as register_agents_console
+    app.state.agents_console = register_agents_console(app,db)
     from youtube_memory import register as register_youtube_memory
     app.state.youtube_memory = register_youtube_memory(app,db)
     @app.get('/youtube-memory', response_class=HTMLResponse)
@@ -101,10 +125,12 @@ def register(app,db,sup):
         return (BASE/'youtube-memory.html').read_text(encoding='utf-8')
     from money_engine import register as register_money
     app.state.money_engine = register_money(app,db)
+    from music_render import register as register_music_render
+    app.state.music_render = register_music_render(app,db)
     from wdr_lookbook import register as register_lookbook
     register_lookbook(app)
-    app.mount('/branding',StaticFiles(directory='F:/NEXEN_GAME/branding'),name='branding')
-    app.mount('/vendor',StaticFiles(directory=BASE/'vendor'),name='vendor')
+    mount_available_assets(app,'/branding','F:/NEXEN_GAME/branding','branding')
+    mount_available_assets(app,'/vendor',BASE/'vendor','vendor')
     app.mount('/world-assets',StaticFiles(directory=BASE/'world-assets',check_dir=False),name='world-assets')
     with db.connect() as c:
         c.executescript('''CREATE TABLE IF NOT EXISTS hub_skills(
@@ -114,10 +140,10 @@ def register(app,db,sup):
           CREATE TABLE IF NOT EXISTS hub_state(key TEXT PRIMARY KEY,value TEXT);''')
 
     def refresh_skills():
-        if (BASE/'data/MIGRATION_LIBRARY_PENDING').exists():
+        if (BASE/'data/MIGRATION_LIBRARY_PENDING').exists() or not (BASE/'library').is_dir():
             with db.connect() as c:
                 count=c.execute('SELECT count(*) FROM hub_skills').fetchone()[0]
-            return {'count':count,'status':'Existing references retained while library migration finishes.'}
+            return {'count':count,'status':'Existing references retained while the library is unavailable or migrating.'}
         rows=[]
         root=BASE/'library'
         for collection in sorted(root.iterdir()) if root.exists() else []:
@@ -162,7 +188,7 @@ def register(app,db,sup):
                 report['status']='ready'
                 report['coverage']='Up to 100 latest locally ingested messages, filtered to the last 24 hours. Does not fetch Discord live.'
             except sqlite3.Error as exc: report['error']=str(exc)
-        (BASE/'data/discord-digest.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
+        save_digest(report, BASE/'data/discord-digest.json')
         db.event('discord_digest','Local Discord digest refreshed',data={'messages':len(report['messages']),'status':report['status']})
         return report
 
@@ -232,12 +258,14 @@ def register(app,db,sup):
     @app.get('/api/hub/document/{name}',response_class=HTMLResponse)
     def document(name:str):
         names={'master':'NEXEN-MASTER.md','prompts':'NEXEN-PROMPTS.md','map':'NEXEN-MAP.html','lumipaw':'LUMIPAW-LAUNCH.md','handoff':'NEXEN-HANDOFF.md','rent':'RENT-ASSISTANCE.md','video':'NEXEN-VIDEO-BRIEF.md','drive-report':'F-AND-CLAUDE-REPORT.md','quality':'NEXEN-QUALITY-PLAN.md'}
-        if name not in names:raise HTTPException(404,'Unknown document')
-        p=BASE/names[name]
+        curated={'benefits':'BENEFITS-AND-STABILITY-PLAN.md','credit':'CREDIT-RECOVERY-PLAN.md',
+                 'wdr-business':'WDR-BUSINESS-SETUP-PLAN.md','architecture-current':'NEXEN-ARCHITECTURE-CURRENT.md'}
+        if name not in names and name not in curated:raise HTTPException(404,'Unknown document')
+        p=Path('H:/NEXEN/knowledge')/curated[name] if name in curated else BASE/names[name]
         if not p.exists():raise HTTPException(404,'Document not yet available')
         text=p.read_text(encoding='utf-8-sig')
         if name=='map':return text
-        return '<meta charset="utf-8"><style>body{background:#0c1420;color:#e5eef6;font:16px/1.65 system-ui;margin:30px}pre{white-space:pre-wrap;font:inherit}</style><pre>'+escape(text)+'</pre>'
+        return '<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{background:#0c1420;color:#e5eef6;font:16px/1.65 system-ui;margin:30px;max-width:1000px}a{color:#abe7ff}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit}</style><nav><a href="/" target="_top">NEXEN home</a> · <a href="/money" target="_top">Money Engine</a> · <a href="/tasks" target="_top">Shared tasks</a></nav><pre>'+escape(text)+'</pre>'
 
     @app.get('/api/skills')
     def skills(q:str=''):
@@ -302,7 +330,7 @@ def register(app,db,sup):
         <h2>Choose an AI</h2><p>Use your existing Multi-AI screen to compare answers. OpenClaw is an execution agent for supported tool tasks. Ollama runs local models. OmniRoute is the provider router; it does not remove provider usage limits. Codex is already signed in through ChatGPT.</p>
         <h2>Mission room</h2><p>Use W/A/S/D to walk, Shift to sprint, E to enter a nearby car and V to exit. Stations open the same features as the control center. Exploration points represent visited locations, not completed work or money.</p>
         <h2>Payments</h2><p>Use Amboras or the ad provider's checkout and billing page. Never paste a credit-card number into NEXEN's task field.</p>
-        <h2>What is still being built</h2><p>Direct business execution, automatic Claude-to-Codex handoff, PC2 leasing, full archive ingestion, and the advanced memory compiler are pending. No zero-latency guarantee can be made for a music studio VM; benchmark a separate test setup before changing your recording environment.</p>'''
+        <h2>What is still being built</h2><p>Direct business execution, automatic Claude-to-Codex handoff, PC2 leasing, full archive ingestion, and the advanced memory compiler are pending. Check the connection status and recorded execution evidence for each tool.</p>'''
 
     refresh_skills()
     digest()
