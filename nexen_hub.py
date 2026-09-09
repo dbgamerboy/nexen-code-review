@@ -86,6 +86,19 @@ def register(app,db,sup):
     register_storage(app)
     from development_runtime import register as register_development
     register_development(app)
+    from code_review import register as register_code_review
+    register_code_review(app,db)
+    from task_scene import register as register_task_scene
+    register_task_scene(app,db)
+    from agentic_os import register as register_agentic_os
+    register_agentic_os(app,db)
+    from youtube_memory import register as register_youtube_memory
+    app.state.youtube_memory = register_youtube_memory(app,db)
+    @app.get('/youtube-memory', response_class=HTMLResponse)
+    def youtube_memory_page(request:Request):
+        from pc_control import validate_request
+        validate_request(request)
+        return (BASE/'youtube-memory.html').read_text(encoding='utf-8')
     from money_engine import register as register_money
     app.state.money_engine = register_money(app,db)
     from wdr_lookbook import register as register_lookbook

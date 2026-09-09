@@ -141,7 +141,9 @@ def register(app):
         if not private and path in service_paths and len(keys)==1 and hmac.compare_digest(keys[0],store.service_key):return None
         if store.valid(request.cookies.get(COOKIE)):return None
         if path.startswith('/api/') or request.method!='GET':return JSONResponse({'detail':'Unlock NEXEN first.','login':'/login'},status_code=401)
-        next_path=path if path in {'/game','/tasks','/day','/photos','/problems','/plans','/lab','/guide','/money','/lookbook','/connections'} else '/'
+        next_path=path if path in {'/game','/tasks','/day','/photos','/problems','/plans','/lab','/guide','/money','/lookbook','/connections',
+                                  '/voice','/next','/desktop','/storage','/memory-pools','/automatic-mode','/problem-cases','/check-in',
+                                  '/agentic-os','/youtube-memory','/code-review'} else '/'
         return RedirectResponse('/login?next='+next_path,status_code=303)
 
     return gate
