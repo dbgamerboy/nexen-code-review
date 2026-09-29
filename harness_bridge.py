@@ -25,8 +25,9 @@ DEFAULT_RUNTIME = Path('F:/NEXEN_GAME/NEXEN_Autonomy_v0.1')
 DEFAULT_STATE = Path('F:/NEXEN_GAME/harness-development/state')
 CLAUDE = Path('C:/Users/LOCAL_USER/.local/bin/claude.exe')
 CODEX = Path('C:/Users/LOCAL_USER/AppData/Local/OpenAI/Codex/bin/fd4c151a749f3ab4/codex.exe')
+HERMES = Path(os.environ.get('LOCALAPPDATA', 'C:/Users/LOCAL_USER/AppData/Local')) / 'hermes/bin/hermes.exe'
 NODE = Path('C:/Program Files/nodejs/node.exe')
-PROVIDERS = ('ollama', 'claude', 'codex', 'crush', 'deepseek', 'blackbox', 'omniroute')
+PROVIDERS = ('ollama', 'claude', 'codex', 'hermes', 'crush', 'deepseek', 'blackbox', 'omniroute')
 TASK_TYPES = ('code', 'workflow', 'automation')
 FALLBACK_REASONS = {'rate_limit', 'authentication_unavailable', 'provider_unavailable'}
 MAX_REQUEST_CHARS = 8000
@@ -133,6 +134,7 @@ class HarnessBridge:
     def _entry(self, provider):
         entries = {
             'claude': [str(CLAUDE)], 'codex': [str(CODEX)],
+            'hermes': [str(HERMES)],
             'crush': [str(self.runtime_root / 'harnesses/crush/node_modules/@charmland/crush/bin/crush.exe')],
             'deepseek': [str(NODE), str(self.runtime_root / 'harnesses/deepseek/node_modules/@deepseek-ai/dsh/lib/bin.js')],
             'blackbox': [str(NODE), str(self.runtime_root / 'harnesses/blackbox/node_modules/@blackbox_ai/blackbox-cli/dist/index.js')],
@@ -174,6 +176,8 @@ class HarnessBridge:
             if name in ('claude','codex'):
                 item['authentication'] = self._auth_probe(name) if probe_auth else self._auth.get(name, {'verified': False, 'reason': 'Not probed in this process'})
                 item['reason'] = 'Read-only CLI plan available; cloud submission and no-C-write launch policy require explicit integration'
+            elif name == 'hermes':
+                item['reason'] = 'Hermes CLI is prepare-only until provider authentication, tool permissions and the NEXEN result-return path are verified'
             elif name in ('crush','deepseek','blackbox'):
                 item['reason'] = 'Installed package is distinct from verified model route and tool permission controls'
             if name == 'ollama':
@@ -232,6 +236,11 @@ class HarnessBridge:
             args=['exec','--sandbox','read-only','--ephemeral','--ignore-user-config',
                   '--skip-git-repo-check','--color','never','--cd',str(workspace),'-']
             unresolved=['Read-only sandbox still permits reading; this is not a no-tools guarantee.', 'Verify auth-preserving F: cache/session/log configuration before execution.', 'Review explicitly selected context for cloud transfer.']
+        elif provider=='hermes':
+            args=['chat','--query-file','-']
+            unresolved=['Verify the installed Hermes CLI/version and exact provider configuration.',
+                        'Review Hermes tool permissions before any run; this prepared plan does not authorize autonomous terminal, browser or file actions.',
+                        'Verify result/evidence return to canonical NEXEN before enabling dispatch.']
         elif provider=='crush':
             args=['run','--quiet','--cwd',str(workspace),'--data-dir',str(self.state_dir/'crush-data')]
             unresolved=['Configure an exact verified model route.', 'Review Crush permissions and skill/MCP behavior before a run; no tool-disable configuration is assumed.']
