@@ -31,6 +31,8 @@ TARGETS = {
                'detail':'Open the actual chat workspace and paste only the context you choose to share. Browser login is not API execution.'},
     'claude': {'name':'Claude', 'url':'https://claude.ai/', 'action':'Open Claude', 'mode':'prepared_handoff',
               'detail':'Open Claude and paste a reviewed packet. No Claude API or CLI execution is attached to this desk.'},
+    'hermes': {'name':'Hermes Agent', 'url':'/agents?target=hermes', 'action':'Prepare Hermes handoff', 'mode':'prepared_handoff',
+               'detail':'Hermes is a registered local agent target. NEXEN prepares bounded shared context; execution stays disabled until the CLI, provider authentication, tool permissions and result return path are verified.'},
     'kilo': {'name':'Kilo Code', 'url':'/kilo', 'action':'Open Kilo workspace', 'mode':'local_workspace',
              'detail':'Use the existing Kilo workspace for its reviewed local draft route. A saved handoff is not a Kilo run.'},
     'omniroute': {'name':'OmniRoute', 'url':'http://127.0.0.1:20128/', 'action':'Open OmniRoute', 'mode':'route_unverified',
@@ -74,7 +76,7 @@ def team_plan(task_id):
 class HandoffBody(BaseModel):
     model_config = ConfigDict(extra='forbid')
     prompt: str = Field(min_length=1, max_length=6000)
-    target: Literal['codex','chatgpt','claude','kilo','omniroute','openrouter','ollama'] = 'kilo'
+    target: Literal['codex','chatgpt','claude','hermes','kilo','omniroute','openrouter','ollama'] = 'kilo'
     project: Literal['nexen','wdr','lumipaw','music','life'] = 'nexen'
     task_type: Literal['code','workflow','automation'] = 'code'
     task_id: Annotated[int, Field(strict=True, ge=1)] | None = None
